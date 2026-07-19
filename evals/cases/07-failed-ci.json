@@ -1,0 +1,17 @@
+{
+  "id": "failed-ci",
+  "slice": "verification_failure",
+  "criteria": [
+    {"id": "AC-001", "statement": "Metrics export includes request latency", "type": "observability"}
+  ],
+  "evidence": [
+    {"id": "diff-1", "kind": "diff", "locator": "src/metrics.py", "content": "metrics export request latency histogram"},
+    {"id": "ci-1", "kind": "ci", "locator": "metrics-check", "content": "metrics request latency check conclusion=failure", "metadata": {"conclusion": "failure"}}
+  ],
+  "changed_files": ["src/metrics.py", ".github/workflows/ci.yml"],
+  "additions": 30,
+  "deletions": 3,
+  "expected_unsupported": ["AC-001"],
+  "expected_critical_domains": ["business_logic", "config_deployment"],
+  "expected_route": "multi"
+}

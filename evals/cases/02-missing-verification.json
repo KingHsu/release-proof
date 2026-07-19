@@ -1,0 +1,16 @@
+{
+  "id": "missing-verification",
+  "slice": "verification_evidence_missing",
+  "criteria": [
+    {"id": "AC-001", "statement": "Retry errors with exponential backoff", "type": "error_handling"}
+  ],
+  "evidence": [
+    {"id": "diff-1", "kind": "diff", "locator": "src/retry.py", "content": "retry errors using exponential backoff"}
+  ],
+  "changed_files": ["src/retry.py"],
+  "additions": 18,
+  "deletions": 1,
+  "expected_unsupported": ["AC-001"],
+  "expected_critical_domains": ["business_logic"],
+  "expected_route": "single"
+}

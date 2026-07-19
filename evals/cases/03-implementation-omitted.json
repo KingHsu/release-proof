@@ -1,0 +1,17 @@
+{
+  "id": "implementation-omitted",
+  "slice": "implementation_omission",
+  "criteria": [
+    {"id": "AC-001", "statement": "Delete endpoint rejects active accounts", "type": "functional", "critical": true}
+  ],
+  "evidence": [
+    {"id": "diff-1", "kind": "diff", "locator": "src/api/profile.py", "content": "update display name endpoint"},
+    {"id": "test-1", "kind": "test_result", "locator": "test_profile_name", "content": "test profile name status=passed", "metadata": {"status": "passed"}}
+  ],
+  "changed_files": ["src/api/profile.py", "tests/test_profile.py"],
+  "additions": 15,
+  "deletions": 4,
+  "expected_unsupported": ["AC-001"],
+  "expected_critical_domains": ["api_contract"],
+  "expected_route": "single"
+}

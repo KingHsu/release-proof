@@ -1,0 +1,21 @@
+{
+  "id": "cross-domain",
+  "slice": "cross_domain_complex_change",
+  "criteria": [
+    {"id": "AC-001", "statement": "API creates an order and migration stores order status", "type": "data", "critical": true},
+    {"id": "AC-002", "statement": "Deployment rollback is documented", "type": "deployment", "critical": true}
+  ],
+  "evidence": [
+    {"id": "api-1", "kind": "api_diff", "locator": "openapi.json", "content": "API POST order creates status"},
+    {"id": "migration-1", "kind": "migration", "locator": "migrations/003_order.sql", "content": "migration order status; downgrade removes column"},
+    {"id": "config-1", "kind": "config", "locator": "docker-compose.yml", "content": "deployment rollback uses previous image"},
+    {"id": "test-1", "kind": "test_result", "locator": "test_api_order_status", "content": "test API order status status=passed", "metadata": {"status": "passed"}},
+    {"id": "test-2", "kind": "test_result", "locator": "test_deployment_rollback", "content": "test deployment rollback status=passed", "metadata": {"status": "passed"}}
+  ],
+  "changed_files": ["openapi.json", "migrations/003_order.sql", "docker-compose.yml", "tests/test_order.py"],
+  "additions": 95,
+  "deletions": 20,
+  "expected_unsupported": [],
+  "expected_critical_domains": ["api_contract", "data_migration", "config_deployment"],
+  "expected_route": "multi"
+}

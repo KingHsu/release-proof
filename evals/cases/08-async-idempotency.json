@@ -1,0 +1,17 @@
+{
+  "id": "async-idempotency",
+  "slice": "single_domain_async",
+  "criteria": [
+    {"id": "AC-001", "statement": "Async invoice job is idempotent on retry", "type": "error_handling", "critical": true}
+  ],
+  "evidence": [
+    {"id": "diff-1", "kind": "diff", "locator": "src/tasks/invoice.py", "content": "async invoice job idempotent retry uses invoice key"},
+    {"id": "test-1", "kind": "test_result", "locator": "test_async_invoice_idempotent_retry", "content": "test async invoice job idempotent retry status=passed", "metadata": {"status": "passed"}}
+  ],
+  "changed_files": ["src/tasks/invoice.py", "tests/test_invoice_task.py"],
+  "additions": 42,
+  "deletions": 7,
+  "expected_unsupported": [],
+  "expected_critical_domains": ["scheduled_async"],
+  "expected_route": "single"
+}

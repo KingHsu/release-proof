@@ -1,0 +1,17 @@
+{
+  "id": "migration-no-rollback",
+  "slice": "single_domain_high_risk",
+  "criteria": [
+    {"id": "AC-001", "statement": "Migration must preserve existing customer data", "type": "data", "critical": true}
+  ],
+  "evidence": [
+    {"id": "migration-1", "kind": "migration", "locator": "migrations/002_customer.sql", "content": "ALTER TABLE customer ADD COLUMN region TEXT; preserve existing data with default"},
+    {"id": "test-1", "kind": "test_result", "locator": "test_migration_preserves_customer_data", "content": "test migration preserve customer data status=passed", "metadata": {"status": "passed"}}
+  ],
+  "changed_files": ["migrations/002_customer.sql", "tests/test_migrations.py"],
+  "additions": 12,
+  "deletions": 0,
+  "expected_unsupported": [],
+  "expected_critical_domains": ["data_migration"],
+  "expected_route": "single"
+}

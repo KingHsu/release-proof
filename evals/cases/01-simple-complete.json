@@ -1,0 +1,17 @@
+{
+  "id": "simple-complete",
+  "slice": "simple_complete_change",
+  "criteria": [
+    {"id": "AC-001", "statement": "Health API returns an ok status", "type": "functional"}
+  ],
+  "evidence": [
+    {"id": "diff-1", "kind": "diff", "locator": "src/api/health.py", "content": "def health_api(): return {status: 'ok'}"},
+    {"id": "test-1", "kind": "test_result", "locator": "test_health_api", "content": "test_health_api_returns_ok status=passed", "metadata": {"status": "passed"}}
+  ],
+  "changed_files": ["src/api/health.py", "tests/test_health_api.py"],
+  "additions": 20,
+  "deletions": 2,
+  "expected_unsupported": [],
+  "expected_critical_domains": ["api_contract"],
+  "expected_route": "single"
+}
