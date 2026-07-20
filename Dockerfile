@@ -14,7 +14,9 @@ COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 COPY skills ./skills
 COPY evals ./evals
-RUN python -m pip install --upgrade pip && python -m pip install .
+ARG PIP_INDEX_URL=https://pypi.org/simple/
+RUN python -m pip install --upgrade pip && \
+    python -m pip install . --index-url "$PIP_INDEX_URL"
 
 RUN mkdir -p /app/runtime && chown -R app:app /app
 USER app
