@@ -36,7 +36,7 @@ def create_app(service: ReleaseProofService | None = None) -> FastAPI:
 
     application = FastAPI(
         title="ReleaseProof API",
-        version="0.1.0",
+        version="0.2.0",
         description="Evidence-grounded release acceptance. It never approves a deployment.",
         lifespan=lifespan,
     )

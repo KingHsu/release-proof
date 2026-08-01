@@ -4,6 +4,8 @@
 
 The local Git adapter permits only `rev-parse`, `diff`, `show`, and fixed-string `grep`. It invokes `subprocess.run` with an argument list, `shell=False`, a timeout, and bounded output. It never executes repository scripts or model-generated commands.
 
+The planner can propose only a structured action; it cannot call an adapter. Main-path operations are admitted through `EvidenceToolHarness` and `ReadOnlyToolRegistry` with an explicit five-tool allowlist, typed arguments, frozen refs, changed-file/report manifests, and a stable action key. Persistent State rejects duplicates and stops further collection at configured model-call, tool-call, planner-step, wall-clock, or no-progress limits. A tool error or rejected proposal is traced and never converted into positive evidence.
+
 ## Filesystem boundary
 
 - resolve an explicit repository root;
@@ -13,6 +15,8 @@ The local Git adapter permits only `rev-parse`, `diff`, `show`, and fixed-string
 - block `.env`, key files, credentials, and package-auth files;
 - cap file and report sizes;
 - require test and CI reports to be inside the repository.
+
+`--requirement-file` is a distinct user/host input rather than a model-selectable repository tool. The CLI accepts only a bounded regular UTF-8 Markdown/plain-text file, blocks symlinks and secret-like names, rejects NUL bytes, and records a basename/content-hash locator rather than the absolute host path.
 
 ## Output handling
 

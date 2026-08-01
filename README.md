@@ -1,103 +1,137 @@
 # ReleaseProof
 
-Evidence-grounded release acceptance — maps acceptance criteria to verifiable engineering evidence.
+[![CI](https://github.com/KingHsu/release-proof/actions/workflows/ci.yml/badge.svg)](https://github.com/KingHsu/release-proof/actions/workflows/ci.yml)
 
-## What it does
+A human-gated acceptance layer for coding agents: map requirements to implementation and verification evidence before calling a change complete.
 
-ReleaseProof answers a narrower question than "does this code look good": **does each acceptance criterion have traceable implementation and verification evidence?**
+## Why it exists
 
-It reads your Issue/requirements, Git diff, test reports, and CI snapshots, then produces an evidence matrix:
+Codex, Claude Code, and other coding agents can implement a task and run tests. Their completion message is still a claim, not release evidence. A passing test may cover the wrong criterion; a Diff may implement behavior with no verification; a cross-domain change may need rollout or rollback facts that do not exist in the repository.
 
-- `supported` — implementation + test/CI evidence found
-- `partially_supported` — some evidence, gaps identified
-- `unsupported` — no matching evidence
-- `unable_to_determine` — insufficient input material
+ReleaseProof performs a separate, read-only acceptance pass:
 
-The final recommendation is capped at `ready_for_human_review` — the system **cannot** approve, merge, or deploy.
+- extract explicit acceptance criteria;
+- let a structured planner choose one bounded Git/report read at a time from five allowed tools;
+- validate every proposed tool, argument, revision, path, duplicate key, and budget in code;
+- preserve locator, revision, observer, and content hash in an evidence ledger;
+- match implementation and verification separately with explainable scores and evidence-kind constraints;
+- pause for missing inputs, resume from a LangGraph checkpoint, and apply deterministic policy;
+- return at most `ready_for_human_review` — never approval, merge, or deployment.
+
+## Where it fits
+
+```mermaid
+flowchart LR
+    A["Coding agent<br/>implements change"] --> S["release-readiness-review Skill"]
+    H["Requirement / Issue"] --> S
+    S --> R["ReleaseProof CLI or API"]
+    R --> Q["Structured next action<br/>call_tool / request_input / finish"]
+    Q --> T["Policy-checked read-only tool"]
+    T --> E["Evidence ledger"]
+    E --> Q
+    E --> M["Acceptance matrix"]
+    M --> G{"Deterministic validator + policy gate"}
+    G -->|missing evidence| I["LangGraph interrupt / human input"]
+    I --> R
+    G -->|bounded result| P["Human release review"]
+```
+
+ReleaseProof does not compete with a coding agent and does not edit code. It is the post-coding evidence gate that the agent can invoke as a reusable workflow.
 
 ## Quickstart
 
-**Requirements:** Python 3.11+, Git
+Python 3.11 and 3.12 are supported.
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,mcp]"
-cp .env.example .env
+python -m venv .venv
+# Linux/macOS: source .venv/bin/activate
+# PowerShell:  .\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev,mcp]"
 
-# Offline demo
+# Zero-cost model-planner demo: FakeStructuredLLM uses the real NextAction schema.
+python scripts/demo_bounded_agent.py
+
+# Normal CLI path (offline deterministic planner by default).
 python scripts/create_demo_repo.py
 release-proof analyze runtime/demo-repo \
-  --base HEAD~1 --head HEAD \
+  --base HEAD~1 \
+  --head HEAD \
   --requirement "- Health API returns an ok status" \
   --report reports/junit.xml
-
-# API
-release-proof serve --port 8002
-# → http://localhost:8002/docs
 ```
 
-## How it works
+The CLI also accepts an external UTF-8 Markdown or text file through `--requirement-file`. It reads that file as an explicit user input, stores a redacted locator instead of the host path, and never requires the file to be committed.
 
-1. **Extract** — acceptance criteria from requirements (deterministic parser or LLM forced-schema tool)
-2. **Collect** — read-only Git diff, JUnit XML, coverage JSON, CI snapshots
-3. **Map** — evidence items to criteria via token overlap
-4. **Validate** — every evidence link must be traceable to its source
-5. **Gate** — deterministic policy sets the recommendation ceiling
-
-Complex changes spanning multiple risk domains (API + migration + config) may use parallel specialist analysis; simple changes stay single-path. The default is always single-agent.
-
-## API
-
-| Method | Path | |
-|---|---|---|
-| `POST` | `/api/v1/analyses` | Create analysis |
-| `GET` | `/api/v1/analyses/{id}` | Status and report |
-| `GET` | `/api/v1/analyses/{id}/trace` | Node and tool trace |
-| `POST` | `/api/v1/analyses/{id}/resume` | Supply missing reports or human input |
-| `GET` | `/api/v1/skills` | Available review skills |
-| `POST` | `/api/v1/evaluations` | Run benchmark |
-
-## Quality
+Run the offline quality suite:
 
 ```bash
-ruff check . && pyright && pytest --cov=release_proof
+ruff check .
+pyright
+pytest --cov=release_proof
+release-proof eval
 ```
 
-All tests run offline. CI uses fake LLM, local Git fixtures, and a fake MCP server.
+## Use it from a coding agent
 
-## Tech stack
+The repository ships an installable [`release-readiness-review`](skills/release-readiness-review/SKILL.md) Skill with a deterministic wrapper. It uses the portable `SKILL.md` pattern documented for [OpenAI Skills](https://help.openai.com/en/articles/20001066) and [Claude Agent Skills](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview):
 
-Python 3.11 · FastAPI · LangGraph · SQLite · Pydantic · DeepSeek API · MCP (Python SDK) · Streamlit · Docker
+- Codex: copy the Skill directory into `$CODEX_HOME/skills/`;
+- Claude Code: copy it into `.claude/skills/` for a project or `~/.claude/skills/` for personal use;
+- other hosts: run `scripts/run_release_review.py` from the Skill directory.
 
-## Security
+The wrapper invokes the CLI with an argument array and `shell=False`, validates CLI JSON against the generated JSON/Markdown report, and removes only the temporary requirement file it created.
 
-- All tools are read-only with Pydantic parameter validation and path allowlisting
-- No execution of repository tests, no shell command generation, no write access
-- Git commands use fixed parameter arrays (`shell=False`)
-- `.env`, private keys, and credential files are blocked from reading
-- PR/Issue/Diff/source code are treated as untrusted data, never system instructions
-- Policy gate is deterministic code — the model's explanation can never override it
+The original [`java-microservice-release-review`](skills/java-microservice-release-review/SKILL.md) Skill adds a read-only static scanner for recurring review questions: cross-service field propagation, enum/config omissions, batch idempotency, Oracle `NULL`/`NOT IN` and date semantics, multi-source pagination, gray rollout, and rollback. Its findings are prompts for evidence, not release verdicts, and contain no employer code or data.
 
-See [threat model](docs/threat-model.md) and [tool security](docs/tool-security.md).
+## Conditional specialists, not role theatre
 
-## Limitations
+Simple changes stay on one bounded path. Auto mode enables independent domain specialists only when deterministic file/risk rules find at least two separable domains, such as API contract plus migration. Tests/docs do not count as independent justification by themselves.
 
-- Single-user P0 — no RBAC, tenant isolation, or remote sandboxing
-- Token-overlap evidence mapping is a transparent baseline, not a final semantic matcher
-- OpenAPI comparator covers path/operation additions and removals, not full compatibility analysis
-- Real GitHub MCP Server authentication and main-workflow integration are deferred to P1
-- `ready_for_human_review` still requires human judgment
+Each specialist receives a bounded candidate evidence pack. A model may select evidence IDs, but code rejects unknown IDs and rehydrates only ledger-backed references. The final acceptance matrix and release recommendation remain deterministic.
 
-## Docs
+The Java Skill is loaded only when Java/Spring/Oracle/batch/config signals are present. Its standalone scanner is an external Skill action; ReleaseProof does not pretend the scanner was executed merely because its instructions were loaded.
 
-- [Architecture](docs/architecture.md)
-- [Agent state & recovery](docs/agent-state.md)
-- [Tool security](docs/tool-security.md)
-- [Threat model](docs/threat-model.md)
-- [Evaluation](docs/evaluation.md)
-- [ADR: single-agent by default](docs/adr/0001-single-agent-by-default.md)
-- [ADR: read-only tool boundary](docs/adr/0002-read-only-tool-boundary.md)
-- [ADR: MCP as adapter only](docs/adr/0003-mcp-adapter-only.md)
+## Evidence matching
+
+The v0.2 matcher replaced “any shared token” with an inspectable baseline:
+
+- remove generic terms and normalize aliases;
+- require weighted coverage, phrase or locator signals;
+- enforce implementation vs verification evidence kinds;
+- require explicit `passed`/`success` metadata; failed, missing, or unknown test/CI states cannot enter the verification layer;
+- record score, confidence, matched terms, and signals for every accepted link;
+- allow an explicit criterion ID only when it is present in trusted evidence metadata.
+
+This is intentionally not semantic entailment. Conservative false negatives and domain vocabulary remain evaluation targets; an LLM explanation cannot override a failed deterministic match.
+
+## Bounded execution
+
+The graph bootstraps only the immutable change manifest and requirement. It then loops through `choose_next_action → validate_and_execute_readonly_tool → ingest_evidence → compute_evidence_gaps`. Online mode uses the configured structured LLM planner; offline mode uses a deterministic planner through the same `NextAction` and tool-harness contract.
+
+The planner can return only `call_tool`, `request_input`, or `finish`. It never executes directly. Code enforces the five-tool allowlist, Pydantic arguments, frozen revisions, changed-file/report manifests, path policy, stable action-key deduplication, persistent step/tool/time/no-progress limits, and bounded outputs. Every admitted business tool trace is marked `planner_selected`; rejected proposals produce no evidence.
+
+All local Git commands use fixed argument arrays. Repository code, tests, builds, migrations, and deployments are never executed.
+
+## Interfaces
+
+- CLI: analyze, resume, inspect, diagnose, evaluate, and serve;
+- FastAPI: create/resume analyses, retrieve report/trace, list Skills, run evaluation;
+- JSON and Markdown reports for machine and human consumers;
+- optional Streamlit UI;
+- MCP read-only adapter with real local stdio protocol tests.
+
+The MCP adapter is not wired into the main analysis path yet. Local Git and exported snapshots remain the supported workflow; online GitHub authentication, rate limits, and provider operations are deliberately not claimed.
+
+## Honest scope
+
+- Controlled fixtures validate behavior; they do not establish production recommendation accuracy.
+- The bundled planner demo is a deterministic fake for reproducibility; it proves orchestration and safety behavior, not model quality.
+- Conditional specialists are domain subgraphs, not autonomous agents negotiating with one another.
+- The policy gate can reduce confidence but cannot prove that omitted requirements never existed.
+- Requirement quality, business ownership, rollout windows, and production-only facts still require people.
+- P0 is single-user and local; there is no tenant isolation, organization policy service, or remote execution sandbox.
+
+See [architecture](docs/architecture.md), [agent state and recovery](docs/agent-state.md), [tool security](docs/tool-security.md), [evaluation](docs/evaluation.md), [v0.2 acceptance criteria](docs/v0.2-acceptance.md), and [AI-assisted development disclosure](docs/ai-assisted-development.md).
 
 ## License
 

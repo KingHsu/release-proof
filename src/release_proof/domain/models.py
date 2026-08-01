@@ -207,6 +207,7 @@ class ChangeProfile(BaseModel):
     changed_files: int
     changed_lines: int
     risk_domains: set[RiskDomain] = Field(default_factory=set)
+    technology_tags: set[str] = Field(default_factory=set)
     requires_human_input: bool = False
     recommended_mode: Literal["single", "multi"] = "single"
     reasons: list[str] = Field(default_factory=list)
@@ -239,6 +240,17 @@ class DomainAssessment(BaseModel):
     skills: list[str] = Field(default_factory=list)
 
 
+class EvidenceMatchDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_id: str
+    layer: Literal["implementation", "verification"]
+    score: float = Field(ge=0, le=1)
+    confidence: Literal["medium", "high"]
+    matched_terms: list[str] = Field(default_factory=list)
+    signals: list[str] = Field(default_factory=list)
+
+
 class AcceptanceResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -248,6 +260,7 @@ class AcceptanceResult(BaseModel):
     status: CriterionStatus
     implementation_evidence: list[EvidenceRef] = Field(default_factory=list)
     verification_evidence: list[EvidenceRef] = Field(default_factory=list)
+    match_details: list[EvidenceMatchDetail] = Field(default_factory=list)
     missing_evidence: list[str] = Field(default_factory=list)
     explanation: str
 
@@ -315,6 +328,40 @@ class ResumeRequest(BaseModel):
     ci_snapshot_path: str | None = None
     clarifications: dict[str, str] = Field(default_factory=dict)
     continue_without_reports: bool = False
+
+
+class NextAction(BaseModel):
+    """One bounded planner decision.
+
+    The model can propose an action, but code remains responsible for validating
+    the tool, arguments, repository boundary, duplicate key, and run budget.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["call_tool", "request_input", "finish"]
+    tool_name: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    target_criterion_ids: list[str] = Field(default_factory=list)
+    expected_evidence_kind: EvidenceKind | None = None
+    reason: str = Field(min_length=3, max_length=800)
+    requested_inputs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_action_payload(self) -> NextAction:
+        if self.action == "call_tool":
+            if not self.tool_name:
+                raise ValueError("call_tool needs tool_name")
+            if self.requested_inputs:
+                raise ValueError("call_tool cannot request human inputs")
+        elif self.action == "request_input":
+            if self.tool_name or self.arguments:
+                raise ValueError("request_input cannot carry a tool call")
+            if not self.requested_inputs:
+                raise ValueError("request_input needs at least one requested input")
+        elif self.tool_name or self.arguments or self.requested_inputs:
+            raise ValueError("finish cannot carry tool or input payload")
+        return self
 
 
 class AnalysisRun(BaseModel):

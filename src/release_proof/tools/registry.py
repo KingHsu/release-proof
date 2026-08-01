@@ -44,6 +44,12 @@ class SearchCodeArgs(BaseModel):
 class ReadReportArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str
+    evidence_prefix: str = Field(
+        default="tool-report",
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
 
 
 class CompareOpenAPIArgs(BaseModel):
@@ -105,16 +111,26 @@ class ReadOnlyToolRegistry:
     def schemas() -> dict[str, dict[str, Any]]:
         return {name: model.model_json_schema() for name, model in ARGUMENT_MODELS.items()}
 
+    @staticmethod
+    def action_key(call: ToolCall) -> str:
+        """Return the same stable key used for registry deduplication and run budgets."""
+        arguments = ARGUMENT_MODELS[call.name].model_validate(call.arguments)
+        values = arguments.model_dump(mode="json")
+        # evidence_prefix only controls generated IDs; changing it must not make
+        # the same underlying report read look like a new action.
+        values.pop("evidence_prefix", None)
+        canonical = json.dumps(
+            {"name": call.name, "arguments": values},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
     def execute(self, call: ToolCall) -> ToolObservation:
         if len(self.calls) >= self.max_calls:
             raise RuntimeError("tool call limit reached")
         arguments = ARGUMENT_MODELS[call.name].model_validate(call.arguments)
-        canonical = json.dumps(
-            {"name": call.name, "arguments": arguments.model_dump(mode="json")},
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        call_key = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+        call_key = self.action_key(call)
         if call_key in self._seen_keys:
             raise RuntimeError("duplicate tool call rejected")
         self._seen_keys.add(call_key)
@@ -161,12 +177,16 @@ class ReadOnlyToolRegistry:
         if name == "read_test_report":
             return [
                 item.model_dump(mode="json")
-                for item in self.reports.read(values["path"], evidence_prefix="tool-report")
+                for item in self.reports.read(
+                    values["path"], evidence_prefix=values["evidence_prefix"]
+                )
             ]
         if name == "read_ci_summary":
             return [
                 item.model_dump(mode="json")
-                for item in self.reports.read_ci_snapshot(values["path"], evidence_prefix="tool-ci")
+                for item in self.reports.read_ci_snapshot(
+                    values["path"], evidence_prefix=values["evidence_prefix"]
+                )
             ]
         if name == "compare_openapi":
             base = self.git.policy.validate_readable_file(values["base_path"])

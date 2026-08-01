@@ -1,47 +1,57 @@
 # Agent state, interrupt, and recovery
 
-The durable graph runs these nodes:
+## Durable graph
 
 ```text
 validate_request
-  -> collect_change_facts
+  -> bootstrap_change_facts
   -> extract_acceptance_criteria
   -> profile_change
-  -> request_missing_context (dynamic interrupt)
-  -> refresh_after_resume
   -> load_relevant_skills
+  -> compute_evidence_gaps
+  -> choose_next_action
+       ├─ call_tool -> validate_and_execute_readonly_tool
+       │                -> ingest_evidence
+       │                -> compute_evidence_gaps ─┐
+       │                                          └─ loop
+       ├─ request_input -> interrupt / resume -> compute_evidence_gaps
+       └─ finish
   -> route_analysis
+       ↳ single specialists, or bounded parallel domain subgraphs
   -> build_acceptance_matrix
-  -> policy_gate_and_report
+  -> write_report
 ```
+
+The business read loop is model-directed when an online LLM is configured and deterministic in offline mode. Both planners emit the same structured action and have no direct executor access. A domain “agent” remains a conditional specialist subgraph; the project does not claim autonomous negotiation.
 
 ## Interrupt contract
 
-An interrupt returns only JSON-serializable values:
+An interrupt contains JSON-serializable:
 
 - `run_id`;
 - concrete reasons;
 - concrete requested inputs.
 
-Resume accepts report paths inside the configured repository, a CI snapshot, bounded clarifications, or an explicit request to continue with incomplete evidence.
+Resume accepts report paths inside the analyzed repository, a CI snapshot, bounded clarification, or an explicit instruction to continue with incomplete evidence. Continuing cannot bypass the policy penalty for missing verification.
 
 ## Idempotency
 
-LangGraph restarts the interrupted node from its beginning. Code before `interrupt()` therefore performs no external writes. Git/report reads are repeatable, evidence IDs are stable within a run, and the business run store uses an upsert. Report files are overwritten by the same run ID.
+LangGraph restarts an interrupted node from the beginning. Code before `interrupt()` performs no external mutation. The checkpoint and run store retain evidence, `seen_action_keys`, `agent_steps_used`, `tool_count`, `no_progress_count`, action history, and an absolute `deadline_at`. Resume adds declared reports/CI/clarification and returns to gap computation; it does not bulk recollect or reset a counter.
+
+## Budget and stop reasons
+
+The planner/harness loop records:
+
+- admitted unique tool calls;
+- progress steps;
+- consecutive no-progress observations;
+- elapsed time;
+- tool call key, status, error category, and duration.
+
+Possible stop reasons include `step_limit`, `tool_call_limit`, `llm_call_limit`, `duplicate_tool_action`, `no_progress_limit`, `elapsed_time_limit`, `tool_policy_rejected`, and `planner_error`. A partial run can still produce a report, but the deterministic gate prevents a budget-exhausted analysis from becoming `ready_for_human_review`.
+
+LLM call/output limits are separate from deterministic read-tool limits and are also persisted in trace usage.
 
 ## Fallback
 
-If LangGraph or its SQLite checkpointer is unavailable, the service reports `offline-fallback` in `/health`. The same nodes run synchronously and business state is stored in SQLite. This is a development fallback, not a claim that framework persistence was exercised.
-
-## Stop conditions
-
-`ExecutionBudget` stops on:
-
-- step limit;
-- tool-call limit;
-- repeated identical action key;
-- configured no-progress count;
-- elapsed-time limit.
-
-The current P0 collector is a bounded pass rather than an open-ended model loop. A stopped run can still emit a partial report, but the policy gate prevents it from becoming `ready_for_human_review`.
-
+If the LangGraph SQLite checkpointer cannot initialize, the same node contract can run synchronously and business state remains in SQLite. Health output labels this as an offline fallback; it is not reported as checkpoint recovery.

@@ -14,10 +14,39 @@ from release_proof.domain.models import (
     RequirementSource,
     RiskDomain,
 )
+from release_proof.evidence.validator import EvidenceValidator
 from release_proof.graph.specialists import SpecialistCoordinator
 from release_proof.graph.workflow import WorkflowNodes
 from release_proof.requirements.extractor import LLMAcceptanceExtractor
 from tests.helpers import make_git_repo
+
+
+class ContextResponse(BaseModel):
+    value: str
+
+
+def test_fake_llm_response_factory_can_use_current_bounded_context() -> None:
+    def response_factory(
+        system: str,
+        user: str,
+        schema: type[BaseModel],
+    ) -> dict[str, str]:
+        return {"value": f"{system}|{user}|{schema.__name__}"}
+
+    llm = FakeStructuredLLM(responses={"ContextResponse": response_factory})
+
+    parsed, usage = llm.structured(
+        system="bounded-system",
+        user="evidence-id-1",
+        schema=ContextResponse,
+    )
+
+    assert (
+        ContextResponse.model_validate(parsed).value
+        == "bounded-system|evidence-id-1|ContextResponse"
+    )
+    assert usage["model"] == "fake-structured-llm"
+    assert llm.calls[0]["schema"] == "ContextResponse"
 
 
 def fake_llm() -> FakeStructuredLLM:
@@ -34,6 +63,24 @@ def fake_llm() -> FakeStructuredLLM:
                     }
                 ]
             },
+            "NextAction": [
+                {
+                    "action": "call_tool",
+                    "tool_name": "read_diff",
+                    "arguments": {
+                        "base_ref": "HEAD~1",
+                        "head_ref": "HEAD",
+                        "path": "src/api/health.py",
+                    },
+                    "target_criterion_ids": ["AC-001"],
+                    "expected_evidence_kind": "diff",
+                    "reason": "Read the changed health endpoint implementation.",
+                },
+                {
+                    "action": "finish",
+                    "reason": "The bounded implementation evidence has been collected.",
+                },
+            ],
             "DomainAssessmentDraft": {
                 "summary": "A bounded model assessment that still requires policy review.",
                 "risks": [
@@ -197,10 +244,9 @@ def test_shared_llm_call_budget_falls_back_before_specialist(tmp_path: Path) -> 
     assert llm.calls[0]["schema"] == "ExtractedCriteriaEnvelope"
     assert llm.calls[0]["max_tokens"] == 256
     assert state["llm_usage"]["calls"] == 1
-    assert any("deterministic specialist fallback" in item for item in state["warnings"])
-    route_trace = next(item for item in state["trace"] if item["node"] == "route_analysis")
-    assert route_trace["model"] is None
-    assert "scheduled 0 bounded LLM call(s)" in route_trace["summary"]
+    assert state["stop_reason"] == "llm_call_limit"
+    assert state["budget_exhausted"]
+    assert not any(call["schema"] == "NextAction" for call in llm.calls)
 
 
 def test_multi_specialists_call_llm_but_drop_unknown_evidence_ids() -> None:
@@ -256,7 +302,11 @@ def test_multi_specialists_call_llm_but_drop_unknown_evidence_ids() -> None:
     assert all(report.prompt_version for report in reports)
     assert all(report.model == "fake-structured-llm" for report in reports)
     assert all(report.risks[0].evidence == [] for report in reports)
-    assert all("not in its bounded context" in report.missing_evidence[-1] for report in reports)
+    assert all(report.evidence_refs == [] for report in reports)
+    assert all(
+        any("not in its bounded context" in item for item in report.missing_evidence)
+        for report in reports
+    )
     assert sum(call["schema"] == "DomainAssessmentDraft" for call in llm.calls) == 2
     api_call = next(call for call in llm.calls if "api-1" in call["user"])
     migration_call = next(call for call in llm.calls if "migration-1" in call["user"])
@@ -264,3 +314,61 @@ def test_multi_specialists_call_llm_but_drop_unknown_evidence_ids() -> None:
     assert "MIGRATION-SKILL-SENTINEL" not in api_call["user"]
     assert "MIGRATION-SKILL-SENTINEL" in migration_call["user"]
     assert "API-SKILL-SENTINEL" not in migration_call["user"]
+
+
+def test_llm_specialist_selects_only_candidate_ids_and_hash_validator_rechecks() -> None:
+    llm = FakeStructuredLLM(
+        responses={
+            "DomainAssessmentDraft": {
+                "summary": "The supplied contract diff needs compatibility review.",
+                "evidence_ids": ["api-1", "outside-candidate-pack"],
+                "risks": [
+                    {
+                        "severity": "high",
+                        "statement": "A public contract changed.",
+                        "evidence_ids": ["api-1"],
+                        "needs_human_check": True,
+                    }
+                ],
+                "missing_evidence": [],
+            }
+        }
+    )
+    criterion = AcceptanceCriterion(
+        id="AC-001",
+        statement="Public API remains compatible",
+        source_ref=requirement_evidence().as_ref(),
+        critical=True,
+    )
+    evidence = EvidenceItem.from_observation(
+        evidence_id="api-1",
+        kind=EvidenceKind.API_DIFF,
+        source_uri="git://repo",
+        locator="openapi.json",
+        content="removed path /v1/health",
+        observed_by="test",
+    )
+
+    report = SpecialistCoordinator(llm=llm).run(
+        {RiskDomain.API_CONTRACT},
+        [criterion],
+        [evidence],
+        route="single",
+    )[0]
+
+    assert [ref.evidence_id for ref in report.evidence_refs] == ["api-1"]
+    assert [ref.evidence_id for ref in report.risks[0].evidence] == ["api-1"]
+    assert any("not in its bounded context" in item for item in report.missing_evidence)
+    assert EvidenceValidator().validate([evidence], [], [report]).valid
+
+    modified = EvidenceItem.from_observation(
+        evidence_id="api-1",
+        kind=EvidenceKind.API_DIFF,
+        source_uri="git://repo",
+        locator="openapi.json",
+        content="different content after assessment",
+        observed_by="test",
+    )
+    validation = EvidenceValidator().validate([modified], [], [report])
+    assert not validation.valid
+    assert validation.hash_mismatches == ["api-1"]

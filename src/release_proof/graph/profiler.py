@@ -18,12 +18,45 @@ CONFIG_HINTS = (
     ".env.example",
 )
 ASYNC_HINTS = ("tasks/", "jobs/", "worker", "scheduler", "celery", "cron")
+JAVA_HINTS = (
+    ".java",
+    "src/main/java/",
+    "src/test/java/",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "mvnw",
+    "gradlew",
+)
+SPRING_HINTS = ("spring", "application.yml", "application.yaml", "application.properties")
+ORACLE_HINTS = ("oracle", "plsql", ".pks", ".pkb", "tnsnames", "sqlplus")
+BATCH_HINTS = ("batch/", "spring-batch", "jobs/", "job/", "scheduler", "cron")
+JAVA_CONFIG_HINTS = (
+    "application.yml",
+    "application.yaml",
+    "application.properties",
+    "bootstrap.yml",
+    "bootstrap.yaml",
+    "bootstrap.properties",
+    "src/main/resources/",
+)
 DOC_SUFFIXES = {".md", ".rst", ".txt", ".adoc"}
 
 
 def profile_change(summary: ChangeSummary) -> ChangeProfile:
     paths = [path.replace("\\", "/").lower() for path in summary.changed_files]
     domains: set[RiskDomain] = set()
+    technology_tags: set[str] = set()
+    if any(any(hint in path for hint in JAVA_HINTS) for path in paths):
+        technology_tags.add("java")
+    if any(any(hint in path for hint in SPRING_HINTS) for path in paths):
+        technology_tags.add("spring")
+    if any(any(hint in path for hint in ORACLE_HINTS) for path in paths):
+        technology_tags.add("oracle")
+    if any(any(hint in path for hint in BATCH_HINTS) for path in paths):
+        technology_tags.add("batch")
+    if any(any(hint in path for hint in JAVA_CONFIG_HINTS) for path in paths):
+        technology_tags.add("java_configuration")
     if paths and all(PurePosixPath(path).suffix in DOC_SUFFIXES for path in paths):
         domains.add(RiskDomain.DOCS_ONLY)
     else:
@@ -59,6 +92,7 @@ def profile_change(summary: ChangeSummary) -> ChangeProfile:
         changed_files=len(summary.changed_files),
         changed_lines=summary.additions + summary.deletions,
         risk_domains=domains,
+        technology_tags=technology_tags,
         requires_human_input=False,
         recommended_mode="multi" if multi else "single",
         reasons=reasons,

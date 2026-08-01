@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, cast
@@ -100,6 +100,13 @@ class ReleaseProofService:
             "prompt_versions": [],
             "llm_usage": {"input_tokens": 0, "output_tokens": 0},
             "llm_call_count": 0,
+            "agent_steps_used": 0,
+            "no_progress_count": 0,
+            "seen_action_keys": [],
+            "action_history": [],
+            "deadline_at": (
+                _now() + timedelta(seconds=request.limits.max_elapsed_seconds)
+            ).isoformat(),
         }
 
     def start(self, request: AnalysisRequest) -> AnalysisRun:
@@ -111,11 +118,12 @@ class ReleaseProofService:
             status=RunStatus.RUNNING,
             request=request,
         )
-        self.store.save(run, dict(self._initial_state(run_id, request)))
+        initial_state = self._initial_state(run_id, request)
+        self.store.save(run, dict(initial_state))
         try:
             if self.graph is not None:
                 result = self.graph.invoke(
-                    self._initial_state(run_id, request),
+                    initial_state,
                     config={"configurable": {"thread_id": thread_id}},
                 )
                 return self._run_from_graph_result(run, result)
@@ -149,19 +157,8 @@ class ReleaseProofService:
                 WorkflowState,
                 self.store.get_state(run_id) or self._initial_state(run_id, run.request),
             )
-            state = self.nodes.apply_resume(state, resume)
-            state = self.nodes.refresh_after_resume(state)
-            reasons = self.nodes.missing_context_reasons(state)
-            updated_request = AnalysisRequest.model_validate(state["request"])
-            if reasons and not updated_request.continue_without_reports:
-                payload = InterruptPayload(
-                    run_id=run_id,
-                    reasons=reasons,
-                    requested_inputs=["valid report paths or explicit incomplete continuation"],
-                )
-                return self._finish_or_pause(run, state, payload)
-            state = self.nodes.complete_without_interrupt(state)
-            return self._finish_or_pause(run, state, None)
+            state, interrupt = self.nodes.resume_manual(state, resume)
+            return self._finish_or_pause(run, state, interrupt)
         except Exception as exc:
             run.status = RunStatus.FAILED
             run.errors = [*run.errors, f"{type(exc).__name__}: {str(exc)[:500]}"]

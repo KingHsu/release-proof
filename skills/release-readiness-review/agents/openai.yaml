@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Readiness Review"
+  short_description: "Verify release evidence before human approval"
+  default_prompt: "Use $release-readiness-review to verify this change against acceptance criteria and produce a human-gated release report."

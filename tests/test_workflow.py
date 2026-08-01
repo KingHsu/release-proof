@@ -7,6 +7,7 @@ import pytest
 from release_proof.config import Settings
 from release_proof.domain.models import (
     AnalysisRequest,
+    Recommendation,
     RequirementSource,
     ResumeRequest,
     RunStatus,
@@ -49,6 +50,9 @@ def test_offline_workflow_interrupt_and_resume(tmp_path: Path) -> None:
     assert resumed.status == RunStatus.COMPLETED
     assert resumed.report is not None
     assert resumed.report.acceptance_matrix[0].verification_evidence
+    assert resumed.report.recommendation == Recommendation.CONDITIONAL
+    assert resumed.report.human_checks
+    assert all(check.blocking for check in resumed.report.human_checks)
     assert service.get(run.run_id).report is not None
     assert (tmp_path / "runtime" / "reports" / f"{run.run_id}.json").exists()
     service.close()
@@ -80,6 +84,10 @@ def test_langgraph_sqlite_checkpoint_survives_service_restart(tmp_path: Path) ->
         pytest.skip(first.graph_error or "LangGraph runtime unavailable")
     run = first.start(request_for(repo))
     assert run.status == RunStatus.AWAITING_INPUT
+    assert any(
+        item.node == "request_missing_context" and item.status == "paused"
+        for item in run.trace
+    )
     first.close()
     second = ReleaseProofService(
         settings, project_root=Path(__file__).parents[1], prefer_langgraph=True
@@ -93,6 +101,10 @@ def test_langgraph_sqlite_checkpoint_survives_service_restart(tmp_path: Path) ->
     resumed = second.resume(run.run_id, ResumeRequest(report_paths=[str(report)]))
     assert resumed.status == RunStatus.COMPLETED
     assert resumed.report is not None
+    assert any(
+        item.node == "request_missing_context" and item.status == "completed"
+        for item in resumed.trace
+    )
     second.close()
 
 
@@ -169,7 +181,16 @@ def test_tool_budget_stops_before_remaining_diffs(tmp_path: Path) -> None:
     assert run.report is not None
     assert run.report.stop_reason == "tool_call_limit"
     diff_refs = [item for item in run.report.evidence_index if item.kind.value == "diff"]
-    assert len(diff_refs) == 1
+    assert len(diff_refs) == 2
+    bootstrap_trace = next(item for item in run.trace if item.node == "bootstrap_change_facts")
+    assert bootstrap_trace.tool == "deterministic_bootstrap"
+    assert bootstrap_trace.usage["tool_calls"] == 1
+    tool_traces = [
+        item for item in run.trace if item.node == "validate_and_execute_readonly_tool"
+    ]
+    assert len(tool_traces) == 2
+    assert all(item.tool == "read_diff" for item in tool_traces)
+    assert all(item.usage["planner_selected"] == "true" for item in tool_traces)
     service.close()
 
 

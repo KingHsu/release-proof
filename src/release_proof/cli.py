@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
+from urllib.parse import quote
 
 from release_proof.domain.models import AnalysisRequest, RequirementSource, ResumeRequest
 from release_proof.evaluation import EvaluationRunner
@@ -24,7 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("repository")
     analyze.add_argument("--base", default="HEAD~1")
     analyze.add_argument("--head", default="HEAD")
-    analyze.add_argument("--requirement", required=True, help="inline acceptance checklist")
+    requirement = analyze.add_mutually_exclusive_group(required=True)
+    requirement.add_argument("--requirement", help="inline acceptance checklist")
+    requirement.add_argument(
+        "--requirement-file",
+        help="local UTF-8 Markdown or plain-text requirement file",
+    )
     analyze.add_argument("--report", action="append", default=[])
     analyze.add_argument("--ci-snapshot")
     analyze.add_argument("--mode", choices=["auto", "single", "multi"], default="auto")
@@ -45,6 +52,31 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _requirement_source(args: argparse.Namespace) -> RequirementSource:
+    if args.requirement_file:
+        raw_path = Path(args.requirement_file)
+        if raw_path.is_symlink():
+            raise ValueError("requirement file must be a regular file")
+        path = raw_path.resolve(strict=True)
+        if not path.is_file():
+            raise ValueError("requirement file must be a regular file")
+        if path.name.casefold() in {".env", ".env.local", "credentials", "credentials.json"}:
+            raise ValueError("secret-like requirement file is blocked")
+        if path.suffix.casefold() not in {".md", ".txt", ".rst", ".adoc"}:
+            raise ValueError("requirement file must be Markdown or plain text")
+        if path.stat().st_size > 1_000_000:
+            raise ValueError("requirement file exceeds the 1 MB limit")
+        text = path.read_text(encoding="utf-8")
+        if "\x00" in text:
+            raise ValueError("requirement file contains a NUL byte")
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+        source_uri = (
+            f"local-input://requirement/{quote(path.name, safe='')}?sha256={content_hash}"
+        )
+        return RequirementSource(kind="inline", content=text, source_uri=source_uri)
+    return RequirementSource(kind="inline", content=args.requirement)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "serve":
@@ -55,17 +87,28 @@ def main(argv: list[str] | None = None) -> int:
     service = ReleaseProofService()
     try:
         if args.command == "analyze":
-            request = AnalysisRequest(
-                repository_path=args.repository,
-                base_ref=args.base,
-                head_ref=args.head,
-                requirement_source=RequirementSource(kind="inline", content=args.requirement),
-                report_paths=args.report,
-                ci_snapshot_path=args.ci_snapshot,
-                mode=args.mode,
-                continue_without_reports=args.continue_without_reports,
-            )
-            _print(service.start(request))
+            try:
+                requirement_source = _requirement_source(args)
+            except (OSError, UnicodeError, ValueError) as exc:
+                _print(
+                    {
+                        "status": "failed",
+                        "errors": [f"invalid requirement file: {type(exc).__name__}"],
+                    }
+                )
+                return 2
+            else:
+                request = AnalysisRequest(
+                    repository_path=args.repository,
+                    base_ref=args.base,
+                    head_ref=args.head,
+                    requirement_source=requirement_source,
+                    report_paths=args.report,
+                    ci_snapshot_path=args.ci_snapshot,
+                    mode=args.mode,
+                    continue_without_reports=args.continue_without_reports,
+                )
+                _print(service.start(request))
         elif args.command == "resume":
             _print(
                 service.resume(

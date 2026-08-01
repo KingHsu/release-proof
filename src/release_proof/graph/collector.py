@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import json
-import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 
-from release_proof.adapters.local_git import GitReadOnlyClient
-from release_proof.adapters.reports import ReportCollector
 from release_proof.domain.models import (
     AnalysisRequest,
     ChangeSummary,
@@ -14,7 +11,8 @@ from release_proof.domain.models import (
     EvidenceKind,
 )
 from release_proof.evidence.ledger import EvidenceLedger
-from release_proof.tools.policy import ToolPolicy
+from release_proof.graph.budget import ExecutionBudget
+from release_proof.tools.registry import ReadOnlyToolRegistry, ToolCall, ToolObservation
 
 
 @dataclass
@@ -24,6 +22,8 @@ class CollectedFacts:
     requirement_evidence: EvidenceItem
     evidence: list[EvidenceItem]
     tool_count: int
+    tool_observations: list[dict[str, str | int | None]]
+    budget: dict[str, int | str]
     warnings: list[str]
     stop_reason: str | None = None
 
@@ -43,33 +43,64 @@ def _diff_kind(path: str) -> EvidenceKind:
 
 
 class EvidenceCollector:
-    version = "collector-v1"
+    version = "collector-v2"
 
     def collect(self, request: AnalysisRequest) -> CollectedFacts:
-        started_at = time.monotonic()
-        git = GitReadOnlyClient.for_repository(request.repository_path)
-        policy = git.policy
-        tool_count = 0
-
-        def consume_tool(name: str) -> bool:
-            nonlocal tool_count
-            if tool_count >= request.limits.max_tool_calls:
-                warnings.append(f"stopped before {name}: tool call limit reached")
-                return False
-            if time.monotonic() - started_at >= request.limits.max_elapsed_seconds:
-                warnings.append(f"stopped before {name}: elapsed time limit reached")
-                return False
-            tool_count += 1
-            return True
-
         warnings: list[str] = []
-        if not consume_tool("get_change_summary"):
+        budget = ExecutionBudget(request.limits)
+        registry = ReadOnlyToolRegistry(
+            request.repository_path,
+            max_calls=request.limits.max_tool_calls,
+        )
+        tool_observations: list[dict[str, str | int | None]] = []
+
+        def execute(
+            call: ToolCall,
+            *,
+            required: bool = False,
+        ) -> ToolObservation | None:
+            action_key = registry.action_key(call)
+            if not budget.record_tool(action_key):
+                warnings.append(
+                    f"stopped before {call.name}: {budget.stop_reason or 'budget exhausted'}"
+                )
+                return None
+            observation = registry.execute(call)
+            tool_observations.append(
+                {
+                    "name": observation.name,
+                    "call_key": observation.call_key,
+                    "status": observation.status,
+                    "error_category": observation.error_category,
+                    "duration_ms": observation.duration_ms,
+                }
+            )
+            budget.record_step(added_evidence=1 if observation.status == "ok" else 0)
+            if observation.status == "error":
+                warnings.append(
+                    f"{call.name} returned {observation.error_category or 'tool_error'}"
+                )
+                if required:
+                    raise RuntimeError(f"required read-only tool {call.name} failed")
+            return observation
+
+        summary_observation = execute(
+            ToolCall(
+                name="get_change_summary",
+                arguments={"base_ref": request.base_ref, "head_ref": request.head_ref},
+            ),
+            required=True,
+        )
+        if summary_observation is None or summary_observation.output is None:
             raise RuntimeError("analysis budget is too small for the change summary")
-        summary = git.get_change_summary(request.base_ref, request.head_ref)
+        summary = ChangeSummary.model_validate(summary_observation.output)
         ledger = EvidenceLedger()
-        if not consume_tool("read_requirement"):
-            raise RuntimeError("analysis budget is too small for the requirement")
-        requirement_text, requirement_uri, requirement_locator = self._read_requirement(request, policy)
+        requirement_text, requirement_uri, requirement_locator = self._read_requirement(
+            request,
+            summary,
+            registry,
+            execute,
+        )
         requirement_evidence = EvidenceItem.from_observation(
             evidence_id="requirement-1",
             kind=EvidenceKind.REQUIREMENT,
@@ -83,18 +114,29 @@ class EvidenceCollector:
             if len(ledger) >= request.limits.max_evidence_items:
                 warnings.append("evidence item limit reached; remaining diffs were not collected")
                 break
-            if not consume_tool("read_diff"):
+            observation = execute(
+                ToolCall(
+                    name="read_diff",
+                    arguments={
+                        "base_ref": summary.base_ref,
+                        "head_ref": summary.head_ref,
+                        "path": path,
+                    },
+                )
+            )
+            if observation is None:
                 break
-            try:
-                diff = git.read_diff(summary.base_ref, summary.head_ref, path)
-            except Exception as exc:
-                warnings.append(f"could not read bounded diff for {path}: {type(exc).__name__}")
+            if observation.status == "error" or observation.output is None:
                 continue
+            diff = str(observation.output)
             ledger.add(
                 EvidenceItem.from_observation(
                     evidence_id=f"diff-{index + 1}",
                     kind=_diff_kind(path),
-                    source_uri=f"{git.root.as_uri()}?base={summary.base_ref}&head={summary.head_ref}",
+                    source_uri=(
+                        f"{registry.git.root.as_uri()}?"
+                        f"base={summary.base_ref}&head={summary.head_ref}"
+                    ),
                     revision=summary.head_ref,
                     locator=path,
                     content=diff,
@@ -102,48 +144,79 @@ class EvidenceCollector:
                     metadata={"path": path},
                 )
             )
-        reports = ReportCollector(policy)
         for index, report_path in enumerate(request.report_paths):
-            if not consume_tool("read_test_report"):
-                break
-            try:
-                ledger.extend(reports.read(report_path, evidence_prefix=f"report-{index + 1}"))
-            except Exception as exc:
-                warnings.append(f"report {Path(report_path).name} was not accepted: {type(exc).__name__}")
-        if request.ci_snapshot_path and consume_tool("read_ci_summary"):
-            try:
-                ledger.extend(
-                    reports.read_ci_snapshot(
-                        request.ci_snapshot_path, evidence_prefix="ci-snapshot"
-                    )
+            observation = execute(
+                ToolCall(
+                    name="read_test_report",
+                    arguments={
+                        "path": report_path,
+                        "evidence_prefix": f"report-{index + 1}",
+                    },
                 )
-            except Exception as exc:
-                warnings.append(f"CI snapshot was not accepted: {type(exc).__name__}")
-        stop_reason = None
-        if tool_count >= request.limits.max_tool_calls:
-            stop_reason = "tool_call_limit"
-        elif time.monotonic() - started_at >= request.limits.max_elapsed_seconds:
-            stop_reason = "elapsed_time_limit"
+            )
+            if observation is None:
+                break
+            if observation.status == "ok" and isinstance(observation.output, list):
+                ledger.extend(
+                    EvidenceItem.model_validate(item) for item in observation.output
+                )
+        if request.ci_snapshot_path:
+            observation = execute(
+                ToolCall(
+                    name="read_ci_summary",
+                    arguments={
+                        "path": request.ci_snapshot_path,
+                        "evidence_prefix": "ci-snapshot",
+                    },
+                )
+            )
+            if (
+                observation is not None
+                and observation.status == "ok"
+                and isinstance(observation.output, list)
+            ):
+                ledger.extend(
+                    EvidenceItem.model_validate(item) for item in observation.output
+                )
         return CollectedFacts(
             change_summary=summary,
             requirement_text=requirement_text,
             requirement_evidence=requirement_evidence,
             evidence=ledger.items()[: request.limits.max_evidence_items],
-            tool_count=tool_count,
+            tool_count=budget.tool_calls,
+            tool_observations=tool_observations,
+            budget=budget.snapshot(),
             warnings=warnings,
-            stop_reason=stop_reason,
+            stop_reason=budget.stop_reason,
         )
 
     def _read_requirement(
-        self, request: AnalysisRequest, policy: ToolPolicy
+        self,
+        request: AnalysisRequest,
+        summary: ChangeSummary,
+        registry: ReadOnlyToolRegistry,
+        execute: Callable[..., ToolObservation | None],
     ) -> tuple[str, str, str]:
         source = request.requirement_source
         if source.kind == "inline":
             return source.content or "", source.source_uri or "inline://requirement", "body"
         if not source.path:
             raise ValueError("requirement path is missing")
-        path = policy.validate_readable_file(source.path)
-        text = path.read_text(encoding="utf-8")
+        observation = execute(
+            ToolCall(
+                name="read_file",
+                arguments={
+                    "revision": summary.head_ref,
+                    "path": source.path,
+                    "start_line": 1,
+                    "end_line": 500,
+                },
+            ),
+            required=True,
+        )
+        if observation is None or observation.output is None:
+            raise RuntimeError("analysis budget is too small for the requirement")
+        text = str(observation.output)
         if source.kind == "github_snapshot":
             try:
                 payload = json.loads(text)
@@ -152,4 +225,7 @@ class EvidenceCollector:
                 text = f"{title}\n\n{body}".strip()
             except (json.JSONDecodeError, AttributeError) as exc:
                 raise ValueError("invalid GitHub requirement snapshot") from exc
-        return text, path.as_uri(), "body"
+        source_uri = (
+            f"{registry.git.root.as_uri()}?revision={summary.head_ref}&path={source.path}"
+        )
+        return text, source_uri, source.path

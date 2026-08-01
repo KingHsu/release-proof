@@ -60,6 +60,14 @@ class SkillLoader:
             selected.append("api-compatibility-review")
         if RiskDomain.DATA_MIGRATION in profile.risk_domains:
             selected.append("database-migration-review")
+        if profile.technology_tags & {
+            "java",
+            "spring",
+            "oracle",
+            "batch",
+            "java_configuration",
+        }:
+            selected.append("java-microservice-release-review")
         return [available[name] for name in selected if name in available]
 
     def read_instructions(self, skill: SkillMetadata, *, max_chars: int = 8000) -> str:

@@ -31,6 +31,14 @@ class DomainAssessmentDraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     summary: str
+    evidence_ids: list[str] = Field(
+        default_factory=list,
+        max_length=30,
+        description=(
+            "Only IDs from the supplied candidate evidence pack that directly support "
+            "the assessment summary."
+        ),
+    )
     risks: list[DomainRiskDraft] = Field(default_factory=list)
     missing_evidence: list[str] = Field(default_factory=list)
 
@@ -57,6 +65,8 @@ def _relevant_skill_context(
     domain_skill = SKILL_BY_DOMAIN.get(domain)
     if domain_skill:
         allowed.add(domain_skill)
+    if domain != RiskDomain.DOCS_ONLY:
+        allowed.add("java-microservice-release-review")
     relevant: list[dict[str, str]] = []
     for item in skill_context or []:
         name = str(item.get("name", ""))
@@ -223,6 +233,10 @@ class LLMSpecialist:
                 "criteria": criterion_payload,
                 "evidence": evidence_payload,
                 "review_skills": relevant_skills,
+                "selection_contract": (
+                    "Populate evidence_ids only with IDs from this candidate evidence list. "
+                    "Use an empty list and report missing evidence instead of inventing an ID."
+                ),
             }
         )
         try:
@@ -243,6 +257,12 @@ class LLMSpecialist:
         index = {item.id: item for item in relevant}
         risks: list[RiskItem] = []
         invalid_ids: set[str] = set()
+        selected_ids: list[str] = []
+        for evidence_id in draft.evidence_ids:
+            if evidence_id not in index:
+                invalid_ids.add(evidence_id)
+            elif evidence_id not in selected_ids:
+                selected_ids.append(evidence_id)
         for position, risk in enumerate(draft.risks[:20], start=1):
             valid_refs = []
             for evidence_id in risk.evidence_ids:
@@ -251,6 +271,8 @@ class LLMSpecialist:
                     invalid_ids.add(evidence_id)
                 else:
                     valid_refs.append(item.as_ref())
+                    if evidence_id not in selected_ids:
+                        selected_ids.append(evidence_id)
             severity: Literal["low", "medium", "high", "critical"] = (
                 cast(
                     Literal["low", "medium", "high", "critical"],
@@ -272,6 +294,8 @@ class LLMSpecialist:
         missing = list(draft.missing_evidence)
         if invalid_ids:
             missing.append("model referenced evidence IDs that were not in its bounded context")
+        if not selected_ids:
+            missing.append("model returned no valid candidate evidence IDs for its assessment")
         normalized_usage: dict[str, int | float | str] = {
             key: value
             for key, value in usage.items()
@@ -281,7 +305,7 @@ class LLMSpecialist:
             domain=self.domain,
             summary=draft.summary,
             risks=risks,
-            evidence_refs=[item.as_ref() for item in relevant],
+            evidence_refs=[index[evidence_id].as_ref() for evidence_id in selected_ids],
             missing_evidence=missing,
             specialist=self.name,
             status="partial" if missing else "complete",
@@ -394,7 +418,7 @@ def build_specialist_subgraph(
 ):
     """Build a stateless LangGraph subgraph when LangGraph is installed.
 
-    The production coordinator currently runs the same specialist contract through a
+    The main coordinator currently runs the same specialist contract through a
     bounded executor. This builder makes the subgraph boundary executable and testable
     without coupling the domain model to LangGraph.
     """

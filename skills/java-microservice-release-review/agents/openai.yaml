@@ -1,0 +1,4 @@
+interface:
+  display_name: "Java Microservice Release Review"
+  short_description: "Review cross-service, data, config, and rollout risks"
+  default_prompt: "Use $java-microservice-release-review to review this Java microservice change for cross-service, data, configuration, and rollback risks."

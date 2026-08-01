@@ -5,7 +5,9 @@ from release_proof.domain.models import (
     AnalysisRun,
     ChangeProfile,
     EvidenceItem,
+    EvidenceMatchDetail,
     EvidenceRef,
+    NextAction,
     ReleaseAssessment,
 )
 
@@ -16,7 +18,9 @@ __all__ = [
     "AnalysisRun",
     "ChangeProfile",
     "EvidenceItem",
+    "EvidenceMatchDetail",
     "EvidenceRef",
+    "NextAction",
     "ReleaseAssessment",
 ]
 

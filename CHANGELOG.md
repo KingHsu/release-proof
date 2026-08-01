@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.2.0 - 2026-07-28
+
+### Acceptance evidence
+- Replace any-token evidence linking with explainable weighted matching, layer-specific evidence kinds, pass-state checks, confidence, matched terms, and signals.
+- Preserve implementation and verification as separate requirements for a supported criterion.
+- Require explicit passing test/CI metadata; missing or unknown verification status fails closed.
+- Limit model-backed specialists to candidate evidence IDs and discard references that are absent from the hashed ledger.
+
+### Bounded workflow
+- Replace the fixed bulk collector in the main graph with a bounded, model-directed evidence loop using structured `NextAction` decisions.
+- Add separate planner, tool admission, evidence ingest, and gap-recomputation nodes with conditional LangGraph edges.
+- Persist action history, evidence IDs, duplicate keys, planner/tool counters, no-progress count, and an execution deadline across interrupt/resume while excluding measured human-pause time.
+- Add an ordered `FakeStructuredLLM` planner demo plus rejection, duplicate, budget, and recovery tests without paid API calls.
+- Route main-path Git and report reads through the typed `ReadOnlyToolRegistry`.
+- Apply persistent run-state admission to real collection with shared action-key deduplication, call/step/time/no-progress limits, and traced tool observations.
+- Accept a bounded external UTF-8 requirement file without requiring it to be committed, while hiding the absolute host path.
+- Keep specialists conditional on deterministic multi-domain eligibility.
+
+### Coding-agent Skills
+- Turn `release-readiness-review` into an executable Codex/Claude Code entrypoint with a safe CLI wrapper and JSON/Markdown consistency checks.
+- Add an original `java-microservice-release-review` Skill for cross-service contracts, configuration, batch idempotency, Oracle semantics, pagination, rollout, and rollback evidence.
+- Detect Java/Spring/Oracle/batch/config changes and load the Java Skill only when relevant.
+- Make the Java scanner read the requested Git revision rather than a dirty worktree in ref mode.
+
+### Documentation and packaging
+- Document ReleaseProof as a post-coding evidence gate rather than an autonomous coding agent.
+- Publish exact Skill, MCP, specialist, and matcher boundaries.
+- Remove the platform-specific frozen development snapshot; `pyproject.toml` is the dependency source of truth.
+
 ## 0.1.0 - 2026-07-20
 
 Initial engineering release.
@@ -14,7 +43,7 @@ Initial engineering release.
 - 9-node state graph: validate → collect → extract criteria → profile → load skills → route → build matrix → validate evidence → write report.
 - SQLite checkpoint store with interrupt/resume using stable thread IDs.
 - Idempotent interrupt node: all pre-interrupt DB writes use upsert semantics.
-- Five stop conditions: step/tool/token/cost/no-progress limits.
+- Budget primitives for step/tool/token/cost/no-progress limits.
 - Offline deterministic fallback when LangGraph or DeepSeek are unavailable.
 - Budget consumption tracked per run; shared `max_llm_calls` and `max_output_tokens` caps.
 
@@ -23,7 +52,7 @@ Initial engineering release.
 - Change profile with 7 risk domains detected by path and file-type heuristics.
 - Single-agent path for simple changes; parallel specialist subgraphs gated by risk-domain count.
 - Four domain specialists: API contract, data migration, test evidence, release runtime.
-- Token-overlap evidence-to-criterion mapping (ASCII + CJK bigram baseline).
+- Token-overlap evidence-to-criterion mapping (ASCII + CJK bigram baseline, replaced in v0.2).
 
 ### Policy & Safety
 - Deterministic policy gate: critical unsupported → NOT_READY; no verification evidence → max CONDITIONAL; failed validator → downgrade.
@@ -32,7 +61,7 @@ Initial engineering release.
 - Write-shaped MCP action rejection; tool allowlist enforcement.
 
 ### Tools
-- 9 read-only tools with Pydantic parameter schemas and policy enforcement.
+- 9 read-only registry tools with Pydantic parameter schemas and policy enforcement; main-path registry wiring followed in v0.2.
 - Path traversal prevention, extension allowlist (38 types), file size caps (1MB), secret pattern redaction.
 - SHA-256 based tool-call deduplication in single-agent loop.
 - All tool errors classified (tool_error, policy_error, timeout) and surfaced, never masked.
@@ -56,7 +85,7 @@ Initial engineering release.
 
 ### Evaluation
 - 8 offline change cases: simple-complete, missing-verification, implementation-omitted, migration-no-rollback, cross-domain, prompt-injection, failed-ci, async-idempotency.
-- Three variants: direct LLM (PR text only), single (structured evidence), gated_multi (parallel specialists when qualified).
+- Three variants: direct completion claim (no evidence tools), single (structured evidence), gated_multi (route-gate comparison).
 - 4 metrics: acceptance_coverage, unsupported_claim_rate, critical_risk_recall, route_accuracy.
 
 ### Infrastructure

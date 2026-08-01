@@ -1,32 +1,51 @@
 # Evaluation
 
-## Question
+## Questions
 
-Does collecting and validating evidence reduce unsupported completion claims, and does conditional multi-agent routing identify cross-domain risk without wasting the simple path?
+The controlled suite asks:
+
+1. Does requiring implementation **and** verification evidence reduce unsupported completion claims?
+2. Does deterministic routing keep simple changes on one path and identify changes with independent risk domains?
+3. Does a stricter matcher avoid linking a criterion to evidence through one generic shared word?
 
 ## Variants
 
-- `direct`: PR completion claim only; no tools or risk profiler.
-- `single`: deterministic evidence matrix and single route.
-- `gated_multi`: same evidence logic, with deterministic cross-domain routing.
+- `direct`: trusts the fixture PR completion claim and uses no evidence tools.
+- `single`: builds the deterministic evidence matrix and forces the single route.
+- `gated_multi`: uses the same matrix and enables the deterministic route gate.
+
+`direct` is a completion-claim baseline, not an LLM benchmark. `gated_multi` measures route choice in this suite; it does not prove that parallel specialists improve analysis quality.
 
 ## Metrics
 
-- `acceptance_coverage`: fraction of criteria receiving a determinate status;
-- `unsupported_claim_rate`: expected unsupported criteria incorrectly labeled supported, divided by supported claims;
-- `critical_risk_recall`: expected critical domains found by the change profiler;
-- `route_accuracy`: single/multi decision against fixture expectation.
+- `acceptance_coverage`: criteria receiving a determinate status;
+- `unsupported_claim_rate`: expected-unsupported criteria incorrectly marked supported, divided by supported claims;
+- `critical_risk_recall`: expected critical domains found by the deterministic profiler;
+- `route_accuracy`: selected single/multi route versus fixture expectation.
+
+Read raw counts as well as rates. A zero denominator is handled explicitly by the runner and should never be advertised as production accuracy.
 
 ## Fixture provenance
 
-The eight initial cases are controlled mutations, not production data. They exercise implementation omission, missing verification, migration recovery, cross-domain routing, prompt injection, failed CI, and async idempotency. They contain no employer or customer code.
+The eight JSON cases are original controlled mutations covering:
 
-## What the current evaluation cannot claim
+- complete simple change;
+- missing verification;
+- implementation omission;
+- migration without rollback;
+- cross-domain change;
+- prompt-injection text;
+- failed CI;
+- async idempotency.
 
-- It does not measure DeepSeek accuracy, latency, or cost.
-- It does not show production recommendation accuracy.
-- Token-overlap evidence mapping is a transparent baseline, not a final semantic matcher.
-- Multi-agent output quality is not proven merely because routing is correct.
+They contain no employer or customer code. Their purpose is deterministic regression and failure analysis.
 
-Before publishing model metrics, add independently labeled real-project or public snapshots, keep holdout cases, version prompts/model/pricing, and report confidence intervals or raw counts alongside averages.
+## Limits
 
+- No production recommendation accuracy is measured.
+- No DeepSeek latency, token, cost, or answer-quality result is implied.
+- Route accuracy is not multi-agent quality.
+- The explainable matcher is lexical/metadata based and can miss semantic paraphrases.
+- A public case study on a real repository change is still a single project example, not an external benchmark.
+
+Before publishing model metrics, add independently labeled public-project snapshots, preserve a holdout set, version prompt/model/pricing, and report confidence intervals or raw counts.
