@@ -58,9 +58,14 @@ release-proof analyze runtime/demo-repo \
   --head HEAD \
   --requirement "- Health API returns an ok status" \
   --report reports/junit.xml
+
+# This command makes no request until --confirm-paid-call is supplied.
+release-proof probe-llm
 ```
 
 The CLI also accepts an external UTF-8 Markdown or text file through `--requirement-file`. It reads that file as an explicit user input, stores a redacted locator instead of the host path, and never requires the file to be committed.
+
+Before a full online analysis, `release-proof probe-llm --confirm-paid-call` makes exactly one structured-output compatibility request with SDK retries disabled and a 128-token output cap. It reports only model/usage or a safe response-shape diagnostic; prompts, response text, and credentials are not persisted.
 
 Run the offline quality suite:
 

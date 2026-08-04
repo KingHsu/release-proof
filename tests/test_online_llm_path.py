@@ -3,9 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from pydantic import BaseModel
 
-from release_proof.adapters.llm import DeepSeekAnthropicClient, FakeStructuredLLM
+from release_proof.adapters.llm import (
+    DeepSeekAnthropicClient,
+    FakeStructuredLLM,
+    StructuredOutputError,
+)
 from release_proof.domain.models import (
     AcceptanceCriterion,
     AnalysisRequest,
@@ -159,6 +164,32 @@ def test_deepseek_client_forces_schema_bound_tool_output() -> None:
         "type": "tool",
         "name": "submit_structured_response",
     }
+
+
+def test_deepseek_client_reports_safe_response_shape_without_echoing_text() -> None:
+    class SampleOutput(BaseModel):
+        answer: str
+
+    class TextOnlyMessages:
+        def create(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text="private model output")],
+                stop_reason="end_turn",
+                usage=SimpleNamespace(input_tokens=11, output_tokens=7),
+            )
+
+    client = DeepSeekAnthropicClient.__new__(DeepSeekAnthropicClient)
+    object.__setattr__(client, "_client", SimpleNamespace(messages=TextOnlyMessages()))
+    client.model = "deepseek-test"
+
+    with pytest.raises(StructuredOutputError) as captured:
+        client.structured(system="system", user="user", schema=SampleOutput)
+
+    message = str(captured.value)
+    assert "stop_reason=end_turn" in message
+    assert "block_types=text" in message
+    assert "private model output" not in message
 
 
 def test_workflow_records_online_prompt_and_usage(tmp_path: Path) -> None:

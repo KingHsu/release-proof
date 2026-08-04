@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add an explicit one-request `probe-llm --confirm-paid-call` command with retries disabled and a 128-token output cap.
+- Preserve safe structured-response diagnostics (stop reason and content-block types) without storing provider text, prompts, or credentials.
+
 ## 0.2.0 - 2026-07-28
 
 ### Acceptance evidence

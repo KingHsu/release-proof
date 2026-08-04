@@ -9,6 +9,7 @@ from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from pydantic import ValidationError
 
+from release_proof.adapters.llm import StructuredOutputError
 from release_proof.domain.models import (
     AcceptanceCriterion,
     AcceptanceResult,
@@ -88,6 +89,13 @@ class WorkflowState(TypedDict):
     acceptance_results: NotRequired[list[dict[str, Any]]]
     report: NotRequired[dict[str, Any]]
     resume_payload: NotRequired[dict[str, Any]]
+
+
+def _safe_model_failure(exc: Exception) -> str:
+    """Expose adapter-owned diagnostics without persisting provider content or prompts."""
+    if isinstance(exc, StructuredOutputError):
+        return f"{type(exc).__name__}: {str(exc)[:240]}"
+    return type(exc).__name__
 
 
 def _model_list(model, values: list[dict[str, Any]]):
@@ -256,7 +264,8 @@ class WorkflowNodes:
                 )
                 state["warnings"] = [
                     *state.get("warnings", []),
-                    f"online acceptance extraction failed ({type(exc).__name__}); offline baseline used",
+                    f"online acceptance extraction failed ({_safe_model_failure(exc)}); "
+                    "offline baseline used",
                 ]
         criteria = outcome.criteria
         state["criteria"] = [item.model_dump(mode="json") for item in criteria]
@@ -429,7 +438,7 @@ class WorkflowNodes:
                 state["stop_reason"] = "planner_error"
                 state["warnings"] = [
                     *state.get("warnings", []),
-                    f"planner failed closed ({type(exc).__name__}); no deterministic bulk "
+                    f"planner failed closed ({_safe_model_failure(exc)}); no deterministic bulk "
                     "collection fallback was used",
                 ]
                 outcome = self._finished_outcome(

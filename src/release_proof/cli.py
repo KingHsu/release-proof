@@ -4,11 +4,24 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote
 
+from pydantic import BaseModel
+
+from release_proof.adapters.llm import (
+    DeepSeekAnthropicClient,
+    LLMDisabledError,
+    StructuredOutputError,
+)
+from release_proof.config import get_settings
 from release_proof.domain.models import AnalysisRequest, RequirementSource, ResumeRequest
 from release_proof.evaluation import EvaluationRunner
 from release_proof.graph.service import ReleaseProofService
+
+
+class ProviderProbeResponse(BaseModel):
+    status: Literal["ok"]
 
 
 def _print(value) -> None:
@@ -44,6 +57,15 @@ def build_parser() -> argparse.ArgumentParser:
     get = sub.add_parser("get", help="read a stored analysis")
     get.add_argument("run_id")
     sub.add_parser("doctor", help="show local runtime readiness without exposing secrets")
+    probe = sub.add_parser(
+        "probe-llm",
+        help="make one explicit paid structured-output compatibility call",
+    )
+    probe.add_argument(
+        "--confirm-paid-call",
+        action="store_true",
+        help="required acknowledgement; without it no provider request is sent",
+    )
     evaluate = sub.add_parser("eval", help="run deterministic offline fixtures")
     evaluate.add_argument("--cases", default=None)
     serve = sub.add_parser("serve", help="start the FastAPI service")
@@ -83,6 +105,73 @@ def main(argv: list[str] | None = None) -> int:
         import uvicorn
 
         uvicorn.run("release_proof.api.app:app", host=args.host, port=args.port, reload=False)
+        return 0
+    if args.command == "probe-llm":
+        if not args.confirm_paid_call:
+            _print(
+                {
+                    "status": "not_run",
+                    "paid_api_calls": 0,
+                    "reason": "pass --confirm-paid-call to allow exactly one request",
+                }
+            )
+            return 2
+        settings = get_settings()
+        try:
+            client = DeepSeekAnthropicClient(
+                api_key=settings.deepseek_api_key,
+                base_url=settings.deepseek_base_url,
+                model=settings.deepseek_model,
+                timeout_seconds=settings.llm_timeout_seconds,
+                max_retries=0,
+            )
+            parsed, usage = client.structured(
+                system="Return the requested health result through the provided tool.",
+                user="Submit status=ok. Do not add fields.",
+                schema=ProviderProbeResponse,
+                max_tokens=128,
+            )
+            probe_result = ProviderProbeResponse.model_validate(parsed)
+        except LLMDisabledError as exc:
+            _print(
+                {
+                    "status": "failed",
+                    "paid_api_calls": 0,
+                    "error_type": type(exc).__name__,
+                    "safe_detail": str(exc),
+                }
+            )
+            return 3
+        except StructuredOutputError as exc:
+            _print(
+                {
+                    "status": "failed",
+                    "provider_requests_attempted": 1,
+                    "billing_unknown": True,
+                    "error_type": type(exc).__name__,
+                    "safe_detail": str(exc),
+                }
+            )
+            return 3
+        except Exception as exc:
+            _print(
+                {
+                    "status": "failed",
+                    "provider_requests_attempted": 1,
+                    "billing_unknown": True,
+                    "error_type": type(exc).__name__,
+                    "safe_detail": "provider request failed; response content was not persisted",
+                }
+            )
+            return 3
+        _print(
+            {
+                "status": probe_result.status,
+                "paid_api_calls": 1,
+                "model": settings.deepseek_model,
+                "usage": usage,
+            }
+        )
         return 0
     service = ReleaseProofService()
     try:

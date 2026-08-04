@@ -9,6 +9,10 @@ class LLMDisabledError(RuntimeError):
     pass
 
 
+class StructuredOutputError(ValueError):
+    """A provider response arrived but could not satisfy the local schema contract."""
+
+
 class DeepSeekAnthropicClient:
     """Small provider boundary; importing it never reads or logs a key."""
 
@@ -65,7 +69,9 @@ class DeepSeekAnthropicClient:
             tool_choice={"type": "tool", "name": tool_name},
         )
         payload: Any | None = None
+        block_types: list[str] = []
         for block in response.content:
+            block_types.append(str(getattr(block, "type", "unknown")))
             if (
                 getattr(block, "type", None) == "tool_use"
                 and getattr(block, "name", None) == tool_name
@@ -73,11 +79,18 @@ class DeepSeekAnthropicClient:
                 payload = getattr(block, "input", None)
                 break
         if payload is None:
-            raise ValueError("model did not return the forced structured response tool")
+            stop_reason = str(getattr(response, "stop_reason", "unknown"))
+            safe_types = ",".join(dict.fromkeys(block_types)) or "none"
+            raise StructuredOutputError(
+                "structured response missing required tool_use "
+                f"(stop_reason={stop_reason}, block_types={safe_types})"
+            )
         try:
             parsed = schema.model_validate(payload)
         except ValueError as exc:
-            raise ValueError("model response did not match the requested JSON schema") from exc
+            raise StructuredOutputError(
+                "structured tool input did not match the requested schema"
+            ) from exc
         usage = getattr(response, "usage", None)
         metrics = {
             "input_tokens": getattr(usage, "input_tokens", 0),

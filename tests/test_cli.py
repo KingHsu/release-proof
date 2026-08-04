@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from release_proof.cli import _requirement_source, build_parser
+import release_proof.cli as cli
+from release_proof.cli import _requirement_source, build_parser, main
 
 
 def test_analyze_accepts_requirement_file_without_shell_quoting(tmp_path: Path) -> None:
@@ -60,3 +63,43 @@ def test_requirement_file_rejects_nul_content(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="NUL"):
         _requirement_source(args)
+
+
+def test_llm_probe_requires_explicit_paid_call_confirmation(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["probe-llm"]) == 2
+    assert '"paid_api_calls": 0' in capsys.readouterr().out
+
+
+def test_llm_probe_reports_one_bounded_successful_call(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings = SimpleNamespace(
+        deepseek_api_key="configured-but-not-used",
+        deepseek_base_url="https://example.invalid/anthropic",
+        deepseek_model="deepseek-test",
+        llm_timeout_seconds=10,
+    )
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            assert kwargs["max_retries"] == 0
+
+        def structured(self, **kwargs):
+            assert kwargs["max_tokens"] == 128
+            return kwargs["schema"](status="ok"), {
+                "input_tokens": 5,
+                "output_tokens": 2,
+                "model": "deepseek-test",
+            }
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    monkeypatch.setattr(cli, "DeepSeekAnthropicClient", FakeClient)
+
+    assert main(["probe-llm", "--confirm-paid-call"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert payload["paid_api_calls"] == 1
+    assert payload["usage"]["input_tokens"] == 5
