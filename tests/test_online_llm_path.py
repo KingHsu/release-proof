@@ -192,6 +192,107 @@ def test_deepseek_client_reports_safe_response_shape_without_echoing_text() -> N
     assert "private model output" not in message
 
 
+def test_deepseek_client_accepts_dict_blocks_and_json_string_input() -> None:
+    class SampleOutput(BaseModel):
+        answer: str
+
+    class DictMessages:
+        def create(self, **kwargs):
+            del kwargs
+            return {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "submit_structured_response",
+                        "input": '{"answer":"bounded"}',
+                    }
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 13, "output_tokens": 5},
+            }
+
+    client = DeepSeekAnthropicClient.__new__(DeepSeekAnthropicClient)
+    object.__setattr__(client, "_client", SimpleNamespace(messages=DictMessages()))
+    client.model = "deepseek-test"
+
+    parsed, usage = client.structured(system="system", user="user", schema=SampleOutput)
+
+    assert parsed == SampleOutput(answer="bounded")
+    assert usage["input_tokens"] == 13
+    assert usage["output_tokens"] == 5
+
+
+def test_deepseek_client_rejects_wrong_tool_name_without_echoing_it() -> None:
+    class SampleOutput(BaseModel):
+        answer: str
+
+    class WrongToolMessages:
+        def create(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        name="read_private_secret",
+                        input={"path": "private-value"},
+                    )
+                ],
+                stop_reason="tool_use",
+                usage=SimpleNamespace(input_tokens=17, output_tokens=3),
+            )
+
+    client = DeepSeekAnthropicClient.__new__(DeepSeekAnthropicClient)
+    object.__setattr__(client, "_client", SimpleNamespace(messages=WrongToolMessages()))
+    client.model = "deepseek-test"
+
+    with pytest.raises(StructuredOutputError) as captured:
+        client.structured(system="system", user="user", schema=SampleOutput)
+
+    message = str(captured.value)
+    assert "tool_use_count=1" in message
+    assert "exact_name_match=false" in message
+    assert "read_private_secret" not in message
+    assert "private-value" not in message
+    assert captured.value.usage["input_tokens"] == 17
+
+
+def test_deepseek_client_validation_diagnostics_exclude_values_and_unknown_fields() -> None:
+    class SampleOutput(BaseModel):
+        answer: str
+
+    class InvalidInputMessages:
+        def create(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        name="submit_structured_response",
+                        input={"answer": 42, "private_secret": "do-not-echo"},
+                    )
+                ],
+                stop_reason="tool_use",
+                usage=SimpleNamespace(input_tokens=19, output_tokens=4),
+            )
+
+    client = DeepSeekAnthropicClient.__new__(DeepSeekAnthropicClient)
+    object.__setattr__(client, "_client", SimpleNamespace(messages=InvalidInputMessages()))
+    client.model = "deepseek-test"
+
+    with pytest.raises(StructuredOutputError) as captured:
+        client.structured(system="system", user="user", schema=SampleOutput)
+
+    message = str(captured.value)
+    assert '"top_level":"answer"' in message
+    assert "private_secret" not in message
+    assert "do-not-echo" not in message
+    assert captured.value.usage == {
+        "model": "deepseek-test",
+        "input_tokens": 19,
+        "output_tokens": 4,
+    }
+
+
 def test_workflow_records_online_prompt_and_usage(tmp_path: Path) -> None:
     repo = make_git_repo(tmp_path / "repo")
     llm = fake_llm()
@@ -224,7 +325,9 @@ def test_workflow_records_online_prompt_and_usage(tmp_path: Path) -> None:
     assert interrupt is None
     assert "extract-acceptance-criteria-v1" in state["prompt_versions"]
     assert state["llm_usage"]["input_tokens"] > 0
-    extract_trace = next(item for item in state["trace"] if item["node"] == "extract_acceptance_criteria")
+    extract_trace = next(
+        item for item in state["trace"] if item["node"] == "extract_acceptance_criteria"
+    )
     assert extract_trace["model"] == "fake-structured-llm"
     assert sum(call["schema"] == "DomainAssessmentDraft" for call in llm.calls) == 1
     route_trace = next(item for item in state["trace"] if item["node"] == "route_analysis")

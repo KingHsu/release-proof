@@ -50,7 +50,7 @@ The planner/harness loop records:
 
 Possible stop reasons include `step_limit`, `tool_call_limit`, `llm_call_limit`, `duplicate_tool_action`, `no_progress_limit`, `elapsed_time_limit`, `tool_policy_rejected`, and `planner_error`. A partial run can still produce a report, but the deterministic gate prevents a budget-exhausted analysis from becoming `ready_for_human_review`.
 
-LLM call/output limits are separate from deterministic read-tool limits and are also persisted in trace usage.
+LLM call/output limits are separate from deterministic read-tool limits and are also persisted in trace usage. A structured provider failure sets `llm_degraded` for that run: no later planner or specialist call uses the provider, deterministic planning continues one bounded action at a time, and missing provider usage is counted explicitly instead of being reported as zero cost.
 
 ## Fallback
 

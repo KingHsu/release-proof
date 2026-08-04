@@ -22,6 +22,7 @@ Issue and PR text, Diff content, source code, report text, MCP payloads, path pa
 | Arbitrary code execution | No repository test execution, fixed Git commands | Git parsers still process attacker-controlled repository data |
 | MCP privilege escalation | Four internal read intents, read-only server configuration | Upstream tool names and schemas may change |
 | AI self-endorsement | Code and test evidence separated; deterministic gate | Evidence can be incomplete or test labels can be poor |
+| Malformed structured model output | Strict local schema, safe shape-only diagnostics, one-failure run circuit breaker, deterministic bounded fallback | Provider quality can reduce semantic assistance but cannot bypass the harness or gate |
 | Checkpoint duplication | Idempotent interrupt node and upserted run store | Multi-process writer coordination is not production hardened |
 | Denial of service | file/output/count/time limits | Huge repositories can still make Git operations expensive |
 

@@ -106,9 +106,8 @@ class ModelEvidencePlanner:
                 }
                 for item in active_skill_context
             ],
-            "allowed_tools": {
-                name: ARGUMENT_MODELS[name].model_json_schema()
-                for name in CORE_AGENT_TOOLS
+            "candidate_read_actions": {
+                name: ARGUMENT_MODELS[name].model_json_schema() for name in CORE_AGENT_TOOLS
             },
             "remaining_budget": {
                 "steps": remaining_steps,

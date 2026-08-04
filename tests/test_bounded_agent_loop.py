@@ -4,7 +4,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
-from release_proof.adapters.llm import FakeStructuredLLM
+from pydantic import BaseModel
+
+from release_proof.adapters.llm import FakeStructuredLLM, StructuredOutputError
 from release_proof.domain.models import (
     AnalysisRequest,
     Recommendation,
@@ -41,24 +43,24 @@ def fake_with_actions(actions: list[dict[str, Any]]) -> FakeStructuredLLM:
         responses=cast(
             dict[str, Any],
             {
-            "ExtractedCriteriaEnvelope": {
-                "criteria": [
-                    {
-                        "statement": "Health API returns an ok status",
-                        "type": "functional",
-                        "verification_hint": "JUnit test",
-                        "ambiguity": [],
-                        "critical": False,
-                    }
-                ]
-            },
-            "NextAction": actions,
-            "DomainAssessmentDraft": {
-                "summary": "The API evidence is bounded and still subject to policy.",
-                "risks": [],
-                "evidence_ids": [],
-                "missing_evidence": [],
-            },
+                "ExtractedCriteriaEnvelope": {
+                    "criteria": [
+                        {
+                            "statement": "Health API returns an ok status",
+                            "type": "functional",
+                            "verification_hint": "JUnit test",
+                            "ambiguity": [],
+                            "critical": False,
+                        }
+                    ]
+                },
+                "NextAction": actions,
+                "DomainAssessmentDraft": {
+                    "summary": "The API evidence is bounded and still subject to policy.",
+                    "risks": [],
+                    "evidence_ids": [],
+                    "missing_evidence": [],
+                },
             },
         )
     )
@@ -128,6 +130,8 @@ def test_fake_model_drives_diff_report_finish_and_skill_context(tmp_path: Path) 
     assert [call["schema"] for call in llm.calls].count("NextAction") == 3
     planner_calls = [call for call in llm.calls if call["schema"] == "NextAction"]
     assert "release-readiness-review" in planner_calls[0]["user"]
+    assert "candidate_read_actions" in planner_calls[0]["user"]
+    assert "submit_structured_response" in planner_calls[0]["system"]
     selected_tools = [
         item["tool"]
         for item in state["trace"]
@@ -145,6 +149,58 @@ def test_fake_model_drives_diff_report_finish_and_skill_context(tmp_path: Path) 
     assert any(item["metadata"].get("tool") == "read_test_report" for item in evidence)
     report = cast(dict[str, Any], state.get("report"))
     assert report["recommendation"] != Recommendation.ANALYSIS_FAILED.value
+
+
+def test_structured_failure_trips_run_circuit_breaker_and_keeps_bounded_evidence_flow(
+    tmp_path: Path,
+) -> None:
+    class FailingStructuredLLM:
+        model = "provider-test"
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def structured(
+            self,
+            *,
+            system: str,
+            user: str,
+            schema: type[BaseModel],
+            max_tokens: int = 1800,
+        ) -> tuple[BaseModel, dict[str, Any]]:
+            del system, user, max_tokens
+            self.calls.append(schema.__name__)
+            raise StructuredOutputError(
+                "structured contract rejected",
+                usage={"input_tokens": 23, "output_tokens": 7},
+            )
+
+    repo = make_git_repo(tmp_path / "repo-degraded")
+    write_junit(repo)
+    request = request_for(repo, report_paths=["reports/junit.xml"])
+    llm = FailingStructuredLLM()
+    nodes = WorkflowNodes(Path(__file__).parents[1] / "skills", llm=llm)
+
+    state, interrupt = nodes.run_manual(initial_state(request, "degraded-run"))
+
+    assert interrupt is None
+    assert llm.calls == ["ExtractedCriteriaEnvelope"]
+    assert state.get("llm_degraded") is True
+    assert state["llm_usage"] == {
+        "input_tokens": 23,
+        "output_tokens": 7,
+        "calls": 1,
+    }
+    selected_tools = [
+        item["tool"]
+        for item in state["trace"]
+        if item["node"] == "validate_and_execute_readonly_tool"
+    ]
+    assert selected_tools == ["read_diff", "read_test_report"]
+    report = cast(dict[str, Any], state.get("report"))
+    assert report is not None
+    assert report["stop_reason"] == "completed"
+    assert any("offline baseline used" in limitation for limitation in report["limitations"])
 
 
 def test_unknown_tool_is_rejected_without_execution(tmp_path: Path) -> None:
@@ -168,9 +224,7 @@ def test_unknown_tool_is_rejected_without_execution(tmp_path: Path) -> None:
     assert state["stop_reason"] == "tool_policy_rejected"
     assert state["tool_count"] == 1  # deterministic change-summary bootstrap only
     rejected = next(
-        item
-        for item in state["trace"]
-        if item["node"] == "validate_and_execute_readonly_tool"
+        item for item in state["trace"] if item["node"] == "validate_and_execute_readonly_tool"
     )
     assert rejected["status"] == "failed"
     assert rejected["tool"] == "run_shell"
@@ -189,9 +243,7 @@ def test_duplicate_action_key_stops_before_second_side_effect(tmp_path: Path) ->
     assert state["stop_reason"] == "duplicate_tool_action"
     assert state["tool_count"] == 2  # bootstrap + one admitted diff
     traces = [
-        item
-        for item in state["trace"]
-        if item["node"] == "validate_and_execute_readonly_tool"
+        item for item in state["trace"] if item["node"] == "validate_and_execute_readonly_tool"
     ]
     assert [item["status"] for item in traces] == ["completed", "failed"]
     evidence = cast(list[dict[str, Any]], state.get("evidence"))
@@ -269,9 +321,7 @@ def test_expected_evidence_kind_mismatch_is_rejected_before_tool_execution(
     assert state["stop_reason"] == "tool_policy_rejected"
     assert state["tool_count"] == 1
     rejected = next(
-        item
-        for item in state["trace"]
-        if item["node"] == "validate_and_execute_readonly_tool"
+        item for item in state["trace"] if item["node"] == "validate_and_execute_readonly_tool"
     )
     assert rejected["status"] == "failed"
     assert rejected["tool"] == "read_diff"

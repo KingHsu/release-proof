@@ -62,6 +62,7 @@ class WorkflowState(TypedDict):
     prompt_versions: list[str]
     llm_usage: dict[str, int | float]
     llm_call_count: int
+    llm_degraded: NotRequired[bool]
     agent_steps_used: NotRequired[int]
     no_progress_count: NotRequired[int]
     seen_action_keys: NotRequired[list[str]]
@@ -122,11 +123,12 @@ class WorkflowNodes:
     ) -> None:
         self.harness = EvidenceToolHarness()
         self.offline_extractor = DeterministicAcceptanceExtractor()
+        self.offline_planner = DeterministicEvidencePlanner()
         self.llm = llm
         self.planner = (
             ModelEvidencePlanner(llm, max_output_tokens=min(max_output_tokens, 900))
             if llm is not None
-            else DeterministicEvidencePlanner()
+            else self.offline_planner
         )
         self.extractor = (
             LLMAcceptanceExtractor(llm, max_output_tokens=max_output_tokens)
@@ -143,6 +145,20 @@ class WorkflowNodes:
         self.policy_gate = ReleasePolicyGate()
         self.allowed_roots = [path.resolve() for path in (allowed_roots or [])]
         self.max_llm_calls = max_llm_calls
+
+    @staticmethod
+    def _record_failed_model_usage(state: WorkflowState, exc: Exception) -> None:
+        usage = exc.usage if isinstance(exc, StructuredOutputError) else {}
+        observed = False
+        for key in ("input_tokens", "output_tokens"):
+            value = usage.get(key)
+            if isinstance(value, (int, float)):
+                observed = True
+                state["llm_usage"][key] = state.get("llm_usage", {}).get(key, 0) + value
+        if not observed:
+            state["llm_usage"]["unknown_usage_calls"] = (
+                state.get("llm_usage", {}).get("unknown_usage_calls", 0) + 1
+            )
 
     @staticmethod
     def _trace(
@@ -259,6 +275,9 @@ class WorkflowNodes:
                     _required(state, "requirement_text"), source
                 )
             except Exception as exc:
+                if self.llm is not None:
+                    state["llm_degraded"] = True
+                    self._record_failed_model_usage(state, exc)
                 outcome = self.offline_extractor.extract_outcome(
                     _required(state, "requirement_text"), source
                 )
@@ -414,15 +433,20 @@ class WorkflowNodes:
             state["budget_exhausted"] = True
             state["stop_reason"] = "tool_call_limit"
             outcome = self._finished_outcome("The configured tool-call limit was reached.")
-        elif self.llm is not None and int(state.get("llm_call_count", 0)) >= self.max_llm_calls:
+        elif (
+            self.llm is not None
+            and not state.get("llm_degraded", False)
+            and int(state.get("llm_call_count", 0)) >= self.max_llm_calls
+        ):
             state["budget_exhausted"] = True
             state["stop_reason"] = "llm_call_limit"
             outcome = self._finished_outcome("The configured model-call limit was reached.")
         else:
-            if self.llm is not None:
+            planner = self.offline_planner if state.get("llm_degraded", False) else self.planner
+            if self.llm is not None and not state.get("llm_degraded", False):
                 state["llm_call_count"] = int(state.get("llm_call_count", 0)) + 1
             try:
-                outcome = self.planner.choose(
+                outcome = planner.choose(
                     request=request,
                     summary=summary,
                     criteria=criteria,
@@ -434,15 +458,23 @@ class WorkflowNodes:
                     remaining_tool_calls=request.limits.max_tool_calls - tool_count,
                 )
             except Exception as exc:
-                state["budget_exhausted"] = True
-                state["stop_reason"] = "planner_error"
+                state["llm_degraded"] = True
+                self._record_failed_model_usage(state, exc)
                 state["warnings"] = [
                     *state.get("warnings", []),
-                    f"planner failed closed ({_safe_model_failure(exc)}); no deterministic bulk "
-                    "collection fallback was used",
+                    f"online planner failed ({_safe_model_failure(exc)}); the run-scoped circuit "
+                    "breaker switched subsequent decisions to the bounded deterministic planner",
                 ]
-                outcome = self._finished_outcome(
-                    "The planner failed schema or provider validation; stop closed."
+                outcome = self.offline_planner.choose(
+                    request=request,
+                    summary=summary,
+                    criteria=criteria,
+                    criterion_gaps=state.get("criterion_gaps", []),
+                    evidence=evidence,
+                    action_history=state.get("action_history", []),
+                    active_skill_context=state.get("active_skill_context", []),
+                    remaining_steps=request.limits.max_steps - used_steps,
+                    remaining_tool_calls=request.limits.max_tool_calls - tool_count,
                 )
         action = outcome.action
         state["agent_steps_used"] = used_steps + 1
@@ -521,9 +553,7 @@ class WorkflowNodes:
                 *state.get("seen_action_keys", []),
                 observation.call_key,
             ]
-            state["pending_evidence"] = [
-                item.model_dump(mode="json") for item in result.evidence
-            ]
+            state["pending_evidence"] = [item.model_dump(mode="json") for item in result.evidence]
             observation_payload = {
                 "name": observation.name,
                 "call_key": observation.call_key,
@@ -567,9 +597,7 @@ class WorkflowNodes:
                 ]
                 state["recoverable_tool_error"] = {
                     "reason": "A declared report or CI input could not be consumed safely.",
-                    "requested_inputs": [
-                        "a corrected repository-local report or CI snapshot"
-                    ],
+                    "requested_inputs": ["a corrected repository-local report or CI snapshot"],
                     "tool_name": action.tool_name,
                     "path": str(action.arguments.get("path", "")),
                 }
@@ -717,8 +745,7 @@ class WorkflowNodes:
             deadline_at = state.get("deadline_at")
             if deadline_at:
                 state["deadline_at"] = (
-                    datetime.fromisoformat(deadline_at)
-                    + timedelta(seconds=paused_seconds)
+                    datetime.fromisoformat(deadline_at) + timedelta(seconds=paused_seconds)
                 ).isoformat()
             state["paused_seconds_total"] = (
                 float(state.get("paused_seconds_total", 0.0)) + paused_seconds
@@ -734,8 +761,10 @@ class WorkflowNodes:
         if recoverable_error:
             rejected_path = str(recoverable_error.get("path", ""))
             rejected_tool = str(recoverable_error.get("tool_name", ""))
-        if rejected_tool == "read_test_report" and rejected_path and (
-            resumed_report_paths or resume.continue_without_reports
+        if (
+            rejected_tool == "read_test_report"
+            and rejected_path
+            and (resumed_report_paths or resume.continue_without_reports)
         ):
             rejected_key = self._report_path_key(request.repository_path, rejected_path)
             existing_report_paths = [
@@ -775,9 +804,7 @@ class WorkflowNodes:
         if resume.clarifications:
             ledger = EvidenceLedger(_model_list(EvidenceItem, state.get("evidence", [])))
             for question, answer in sorted(resume.clarifications.items()):
-                stable = hashlib.sha256(
-                    f"{question}\0{answer}".encode()
-                ).hexdigest()[:16]
+                stable = hashlib.sha256(f"{question}\0{answer}".encode()).hexdigest()[:16]
                 ledger.add(
                     EvidenceItem.from_observation(
                         evidence_id=f"human-{stable}",
@@ -788,15 +815,9 @@ class WorkflowNodes:
                         observed_by="human_input:v1",
                     )
                 )
-            state["evidence"] = [
-                item.model_dump(mode="json") for item in ledger.items()
-            ]
+            state["evidence"] = [item.model_dump(mode="json") for item in ledger.items()]
         state["pending_action"] = {}
-        if (
-            resume.report_paths
-            or resume.ci_snapshot_path
-            or resume.continue_without_reports
-        ):
+        if resume.report_paths or resume.ci_snapshot_path or resume.continue_without_reports:
             state["recoverable_tool_error"] = None
         state["resume_payload"] = resume.model_dump(mode="json")
         return state
@@ -826,7 +847,11 @@ class WorkflowNodes:
         profile = ChangeProfile.model_validate(_required(state, "profile"))
         criteria = _model_list(AcceptanceCriterion, _required(state, "criteria"))
         evidence = _model_list(EvidenceItem, _required(state, "evidence"))
-        candidates = self.specialists.llm_candidate_domains(profile.risk_domains, evidence)
+        candidates = (
+            []
+            if state.get("llm_degraded", False)
+            else self.specialists.llm_candidate_domains(profile.risk_domains, evidence)
+        )
         available_calls = max(
             0,
             self.max_llm_calls - int(state.get("llm_call_count", 0)),
@@ -911,11 +936,7 @@ class WorkflowNodes:
             budget_exhausted=bool(state.get("budget_exhausted")),
         )
         missing = sorted(
-            {
-                item
-                for result in results
-                for item in result.missing_evidence
-            }
+            {item for result in results for item in result.missing_evidence}
             | {item for report in domain_reports for item in report.missing_evidence}
         )
         risks = [risk for report in domain_reports for risk in report.risks]
@@ -930,9 +951,13 @@ class WorkflowNodes:
         ]
         rollback_notes: list[str] = []
         if RiskDomain.DATA_MIGRATION in profile.risk_domains:
-            rollback_notes.append("Have a reviewed rollback or forward-fix plan for data migration changes.")
+            rollback_notes.append(
+                "Have a reviewed rollback or forward-fix plan for data migration changes."
+            )
         if RiskDomain.CONFIG_DEPLOYMENT in profile.risk_domains:
-            rollback_notes.append("Record the previous configuration and a bounded rollback trigger.")
+            rollback_notes.append(
+                "Record the previous configuration and a bounded rollback trigger."
+            )
         limitations = [
             "This report is evidence assistance, not a release approval.",
             "Offline deterministic extraction is the default; semantic model review is optional.",
@@ -977,7 +1002,9 @@ class WorkflowNodes:
             state = node(state)
         return state
 
-    def run_manual(self, initial_state: WorkflowState) -> tuple[WorkflowState, InterruptPayload | None]:
+    def run_manual(
+        self, initial_state: WorkflowState
+    ) -> tuple[WorkflowState, InterruptPayload | None]:
         state = cast(WorkflowState, initial_state.copy())
         for node in (
             self.validate_request,
@@ -1035,9 +1062,7 @@ def build_langgraph(nodes: WorkflowNodes, checkpoint_path: Path):
 
     def request_missing_context(state: WorkflowState) -> WorkflowState:
         payload = nodes.interrupt_payload(state)
-        answer = interrupt(
-            payload.model_dump(mode="json")
-        )
+        answer = interrupt(payload.model_dump(mode="json"))
         resumed = nodes.apply_resume(state, ResumeRequest.model_validate(answer))
         resumed["step_count"] = int(resumed.get("step_count", 0)) + 1
         resumed["trace"] = nodes._trace(

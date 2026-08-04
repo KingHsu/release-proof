@@ -22,6 +22,8 @@ ReleaseProof separates evidence rules from orchestration. Domain models, matchin
 
 `ModelEvidencePlanner` uses the existing structured LLM boundary and `NextAction` schema. `FakeStructuredLLM` accepts ordered responses, so CI and the demo exercise a real multi-step model-planner call boundary without a paid API. Offline normal operation uses `DeterministicEvidencePlanner`, but still passes every action through the same harness.
 
+The provider itself exposes only `submit_structured_response`; `read_diff`, `read_file`, `search_code`, `read_test_report`, and `read_ci_summary` are candidate values inside `NextAction`, not provider-side executors. A structured-contract failure trips a run-scoped circuit breaker. Remaining planning and specialist work becomes deterministic, while every proposed read continues through the same harness and the report retains the degradation warning and returned usage metadata.
+
 The harness validates tool name, Pydantic arguments, criterion IDs, frozen refs, changed-file/report manifests, and repository path policy before dispatch. Persistent State enforces stable action-key deduplication, planner/tool steps, wall-clock deadline, and no-progress limits across interrupt/restart. A planner proposal is never evidence; only a successful, normalized tool observation can enter the ledger.
 
 ## Evidence matrix

@@ -113,6 +113,8 @@ This is intentionally not semantic entailment. Conservative false negatives and 
 
 The graph bootstraps only the immutable change manifest and requirement. It then loops through `choose_next_action → validate_and_execute_readonly_tool → ingest_evidence → compute_evidence_gaps`. Online mode uses the configured structured LLM planner; offline mode uses a deterministic planner through the same `NextAction` and tool-harness contract.
 
+If one online structured response violates the local schema, a run-scoped circuit breaker records safe response-shape diagnostics and any returned token usage, then routes all remaining decisions and specialists through deterministic implementations. It does not retry the same malformed plan, execute an unvalidated tool, or raise the final recommendation; the normal harness, budgets, evidence ledger, and policy gate still apply.
+
 The planner can return only `call_tool`, `request_input`, or `finish`. It never executes directly. Code enforces the five-tool allowlist, Pydantic arguments, frozen revisions, changed-file/report manifests, path policy, stable action-key deduplication, persistent step/tool/time/no-progress limits, and bounded outputs. Every admitted business tool trace is marked `planner_selected`; rejected proposals produce no evidence.
 
 All local Git commands use fixed argument arrays. Repository code, tests, builds, migrations, and deployments are never executed.
