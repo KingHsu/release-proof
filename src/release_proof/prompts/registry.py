@@ -46,11 +46,15 @@ PROMPTS: dict[str, PromptSpec] = {
     ),
     "extract_acceptance_criteria": PromptSpec(
         name="extract-acceptance-criteria",
-        version="v1",
+        version="v2",
         system=COMMON_BOUNDARY,
         task_template=(
-            "Split the requirement into independently verifiable criteria. Do not add promises "
-            "that are absent from the source. Preserve ambiguity explicitly. Requirement:\n{requirement}"
+            "Split the requirement into independently verifiable behavioral or deliverable "
+            "criteria. Treat named tests, reports, CI checks, and other evidence mechanisms as "
+            "the verification_hint for the underlying criterion, not as a separate acceptance "
+            "criterion, unless the artifact itself is explicitly required as a user-visible "
+            "deliverable. Do not add promises that are absent from the source. Preserve ambiguity "
+            "explicitly. Requirement:\n{requirement}"
         ),
     ),
     "assess_criterion": PromptSpec(

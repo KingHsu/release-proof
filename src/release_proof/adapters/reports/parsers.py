@@ -25,6 +25,16 @@ def _safe_status(case: Any) -> str:
     return "passed"
 
 
+def _declared_count(value: Any) -> tuple[int | None, bool]:
+    if value is None:
+        return None, True
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None, False
+    return (parsed, True) if parsed >= 0 else (None, False)
+
+
 @dataclass
 class ReportCollector:
     policy: ToolPolicy
@@ -56,7 +66,7 @@ class ReportCollector:
                     evidence_id=f"{prefix}-test-{index + 1}",
                     kind=EvidenceKind.TEST_RESULT,
                     source_uri=path.as_uri(),
-                    locator=f"testcase[{index}]",
+                    locator=f"{path.name}::testcase[{index}]::{classname}::{name}",
                     content=content,
                     observed_by="read_test_report:v1",
                     metadata={"name": name, "classname": classname, "status": status},
@@ -64,6 +74,66 @@ class ReportCollector:
             )
         if not items:
             raise ReportParseError("JUnit report has no testcase elements")
+
+        suites = list(root.iter("testsuite"))
+        for index, suite in enumerate(suites):
+            cases = list(suite.iter("testcase"))
+            inferred_failures = sum(_safe_status(case) == "failed" for case in cases)
+            inferred_errors = sum(_safe_status(case) == "error" for case in cases)
+            inferred_skipped = sum(_safe_status(case) == "skipped" for case in cases)
+            declared_tests, tests_valid = _declared_count(suite.attrib.get("tests"))
+            declared_failures, failures_valid = _declared_count(
+                suite.attrib.get("failures")
+            )
+            declared_errors, errors_valid = _declared_count(suite.attrib.get("errors"))
+            declared_skipped, skipped_valid = _declared_count(suite.attrib.get("skipped"))
+            tests = declared_tests if declared_tests is not None else len(cases)
+            failures = (
+                declared_failures if declared_failures is not None else inferred_failures
+            )
+            errors = declared_errors if declared_errors is not None else inferred_errors
+            skipped = declared_skipped if declared_skipped is not None else inferred_skipped
+            counts_consistent = (
+                tests_valid
+                and failures_valid
+                and errors_valid
+                and skipped_valid
+                and tests == len(cases)
+                and failures == inferred_failures
+                and errors == inferred_errors
+                and skipped == inferred_skipped
+            )
+            status = "passed" if failures == 0 and errors == 0 else "failed"
+            if not counts_consistent:
+                status = "inconsistent"
+            name = suite.attrib.get("name", f"suite-{index + 1}")
+            zero_failures = status == "passed" and counts_consistent
+            content = (
+                f"JUnit report={path.name} repository_local=true suite={name} tests={tests} "
+                f"failures={failures} errors={errors} skipped={skipped} "
+                f"counts_consistent={str(counts_consistent).lower()} "
+                f"zero_failures={str(zero_failures).lower()} status={status}"
+            )
+            items.append(
+                EvidenceItem.from_observation(
+                    evidence_id=f"{prefix}-suite-{index + 1}",
+                    kind=EvidenceKind.TEST_RESULT,
+                    source_uri=path.as_uri(),
+                    locator=f"{path.name}::testsuite[{index}]::{name}",
+                    content=content,
+                    observed_by="read_test_report:v1",
+                    metadata={
+                        "name": name,
+                        "status": status,
+                        "tests": tests,
+                        "failures": failures,
+                        "errors": errors,
+                        "skipped": skipped,
+                        "counts_consistent": counts_consistent,
+                        "zero_failures": zero_failures,
+                    },
+                )
+            )
         return items
 
     def _read_coverage_xml(self, path: Path, root: Any, prefix: str) -> list[EvidenceItem]:

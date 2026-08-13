@@ -14,7 +14,7 @@ from release_proof.domain.models import (
     ResumeRequest,
 )
 from release_proof.graph.workflow import WorkflowNodes, WorkflowState
-from tests.helpers import make_git_repo, write_junit
+from tests.helpers import make_git_repo, write_junit, write_passing_junit
 
 
 def initial_state(request: AnalysisRequest, run_id: str = "bounded-agent-test") -> WorkflowState:
@@ -149,6 +149,71 @@ def test_fake_model_drives_diff_report_finish_and_skill_context(tmp_path: Path) 
     assert any(item["metadata"].get("tool") == "read_test_report" for item in evidence)
     report = cast(dict[str, Any], state.get("report"))
     assert report["recommendation"] != Recommendation.ANALYSIS_FAILED.value
+
+
+def test_live_badcase_shape_maps_passing_junit_to_behavior_criterion(tmp_path: Path) -> None:
+    repo = make_git_repo(tmp_path / "repo-live-badcase")
+    write_passing_junit(repo)
+    requirement = (
+        "The health API must return JSON status=ok, and the repository-local JUnit report "
+        "reports/junit.xml must show that the health test passed with zero failures."
+    )
+    request = request_for(
+        repo,
+        requirement_source=RequirementSource(kind="inline", content=requirement),
+        report_paths=["reports/junit.xml"],
+        mode="single",
+        continue_without_reports=False,
+    )
+    llm = FakeStructuredLLM(
+        responses=cast(
+            dict[str, Any],
+            {
+                "ExtractedCriteriaEnvelope": {
+                    "criteria": [
+                        {
+                            "statement": "The health API must return JSON with status=ok.",
+                            "type": "functional",
+                            "ambiguity": [],
+                            "critical": True,
+                        },
+                        {
+                            "statement": (
+                                "The repository-local JUnit report reports/junit.xml must show "
+                                "that the health test passed with zero failures."
+                            ),
+                            "type": "functional",
+                            "ambiguity": [],
+                            "critical": True,
+                        },
+                    ]
+                },
+                "NextAction": [diff_action(), report_action(), finish_action()],
+            },
+        )
+    )
+    nodes = WorkflowNodes(
+        Path(__file__).parents[1] / "skills",
+        llm=llm,
+        max_llm_calls=4,
+        max_output_tokens=1200,
+    )
+
+    state, interrupt = nodes.run_manual(initial_state(request, "live-badcase-replay"))
+
+    assert interrupt is None
+    report = cast(dict[str, Any], state.get("report"))
+    result = report["acceptance_matrix"][0]
+    assert result["status"] == "supported"
+    assert result["implementation_evidence"]
+    assert result["verification_evidence"]
+    assert any(
+        "verification_hint_match" in detail["signals"]
+        for detail in result["match_details"]
+        if detail["layer"] == "verification"
+    )
+    assert report["recommendation"] == Recommendation.CONDITIONAL.value
+    assert report["human_checks"]
 
 
 def test_structured_failure_trips_run_circuit_breaker_and_keeps_bounded_evidence_flow(

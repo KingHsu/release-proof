@@ -52,3 +52,18 @@ def write_junit(root: Path) -> Path:
     )
     return path
 
+
+def write_passing_junit(root: Path) -> Path:
+    reports = root / "reports"
+    reports.mkdir(exist_ok=True)
+    path = reports / "junit.xml"
+    path.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="health" tests="1" failures="0">
+  <testcase classname="tests.test_health" name="test_health_api_returns_ok" time="0.01" />
+</testsuite>
+""",
+        encoding="utf-8",
+    )
+    return path
+

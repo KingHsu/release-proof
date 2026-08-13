@@ -22,6 +22,7 @@ from release_proof.domain.models import (
 from release_proof.evidence.validator import EvidenceValidator
 from release_proof.graph.specialists import SpecialistCoordinator
 from release_proof.graph.workflow import WorkflowNodes
+from release_proof.prompts.registry import get_prompt
 from release_proof.requirements.extractor import LLMAcceptanceExtractor
 from tests.helpers import make_git_repo
 
@@ -119,10 +120,111 @@ def test_llm_extractor_uses_versioned_prompt_and_schema() -> None:
         "- Health API returns an ok status", requirement_evidence()
     )
     assert outcome.criteria[0].statement == "Health API returns an ok status"
-    assert outcome.prompt_version == "extract-acceptance-criteria-v1"
+    assert outcome.prompt_version == "extract-acceptance-criteria-v2"
     assert outcome.usage["input_tokens"] > 0
     assert llm.calls[0]["schema"] == "ExtractedCriteriaEnvelope"
     assert "untrusted data" in llm.calls[0]["system"]
+
+
+def test_llm_extractor_merges_evidence_mechanism_into_related_behavior() -> None:
+    llm = FakeStructuredLLM(
+        responses={
+            "ExtractedCriteriaEnvelope": {
+                "criteria": [
+                    {
+                        "statement": "The health API must return JSON status=ok.",
+                        "critical": True,
+                    },
+                    {
+                        "statement": (
+                            "The JUnit report must show that the health test passed "
+                            "with zero failures."
+                        ),
+                        "critical": True,
+                    },
+                ]
+            }
+        }
+    )
+
+    outcome = LLMAcceptanceExtractor(llm).extract_outcome(
+        "The health API must return JSON status=ok and the JUnit report must show "
+        "that the health test passed with zero failures.",
+        requirement_evidence(),
+    )
+
+    assert len(outcome.criteria) == 1
+    assert outcome.criteria[0].statement == "The health API must return JSON status=ok."
+    assert "JUnit report" in (outcome.criteria[0].verification_hint or "")
+    assert outcome.criteria[0].critical is True
+
+
+def test_llm_extractor_keeps_explicit_report_deliverable() -> None:
+    llm = FakeStructuredLLM(
+        responses={
+            "ExtractedCriteriaEnvelope": {
+                "criteria": [
+                    {"statement": "The health API must return status=ok."},
+                    {
+                        "statement": (
+                            "Publish a downloadable JUnit report that shows the test passed."
+                        )
+                    },
+                ]
+            }
+        }
+    )
+
+    outcome = LLMAcceptanceExtractor(llm).extract_outcome(
+        "Return status=ok and publish a downloadable JUnit report.",
+        requirement_evidence(),
+    )
+
+    assert len(outcome.criteria) == 2
+
+
+def test_llm_extractor_does_not_match_evidence_terms_inside_words() -> None:
+    llm = FakeStructuredLLM(
+        responses={
+            "ExtractedCriteriaEnvelope": {
+                "criteria": [
+                    {"statement": "The API must return status=ok."},
+                    {
+                        "statement": (
+                            "The latest classification must show an explicit result."
+                        )
+                    },
+                ]
+            }
+        }
+    )
+
+    outcome = LLMAcceptanceExtractor(llm).extract_outcome(
+        "Return status=ok and show an explicit classification result.",
+        requirement_evidence(),
+    )
+
+    assert len(outcome.criteria) == 2
+
+
+def test_llm_extractor_keeps_unrelated_evidence_criterion() -> None:
+    llm = FakeStructuredLLM(
+        responses={
+            "ExtractedCriteriaEnvelope": {
+                "criteria": [
+                    {"statement": "The health API must return status=ok."},
+                    {"statement": "The billing report must show zero failures."},
+                ]
+            }
+        }
+    )
+
+    outcome = LLMAcceptanceExtractor(llm).extract_outcome(
+        "Return health status=ok and show zero failures in the billing report.",
+        requirement_evidence(),
+    )
+
+    assert len(outcome.criteria) == 2
 
 
 def test_deepseek_client_forces_schema_bound_tool_output() -> None:
@@ -323,7 +425,7 @@ def test_workflow_records_online_prompt_and_usage(tmp_path: Path) -> None:
         }
     )
     assert interrupt is None
-    assert "extract-acceptance-criteria-v1" in state["prompt_versions"]
+    assert "extract-acceptance-criteria-v2" in state["prompt_versions"]
     assert state["llm_usage"]["input_tokens"] > 0
     extract_trace = next(
         item for item in state["trace"] if item["node"] == "extract_acceptance_criteria"
@@ -506,3 +608,11 @@ def test_llm_specialist_selects_only_candidate_ids_and_hash_validator_rechecks()
     validation = EvidenceValidator().validate([modified], [], [report])
     assert not validation.valid
     assert validation.hash_mismatches == ["api-1"]
+
+
+def test_acceptance_prompt_keeps_verification_artifacts_as_hints() -> None:
+    prompt = get_prompt("extract_acceptance_criteria")
+
+    assert prompt.identifier == "extract-acceptance-criteria-v2"
+    assert "verification_hint" in prompt.task_template
+    assert "not as a separate acceptance criterion" in prompt.task_template

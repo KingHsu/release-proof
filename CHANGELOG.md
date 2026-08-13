@@ -9,6 +9,10 @@
   provider usage on failed schema validation.
 - Add a run-scoped model circuit breaker: after one structured-contract failure, remaining planner
   and specialist decisions use bounded deterministic fallbacks through the same tool harness.
+- Normalize model-split test/report requirements into verification hints only when they share a
+  concrete domain term with a behavioral criterion; explicit report deliverables stay independent.
+- Preserve JUnit test names and repository-local report paths in locators, add fail-closed suite
+  summaries for zero-failure claims, and match concrete verification hints separately from code.
 
 ## 0.2.0 - 2026-07-28
 

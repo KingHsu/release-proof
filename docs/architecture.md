@@ -34,8 +34,11 @@ The v0.2 matcher:
 
 - removes generic vocabulary and normalizes small aliases;
 - scores weighted criterion coverage, locator overlap, phrase match, and criterion-type/evidence-kind fit;
+- treats a named test/report as a related behavior's verification hint only after a conservative
+  domain-term check; an explicitly requested report deliverable remains a separate criterion;
 - enforces different allowed kinds for implementation and verification;
 - rejects failed test or CI observations as verification;
+- accepts a JUnit zero-failure summary only when declared suite counts agree with parsed testcases;
 - records match score, confidence, terms, and signals;
 - accepts an explicit criterion ID only when trusted evidence metadata contains it.
 

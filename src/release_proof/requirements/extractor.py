@@ -60,6 +60,73 @@ TYPE_TERMS: list[tuple[CriterionType, tuple[str, ...]]] = [
 ]
 CRITICAL_TERMS = ("must", "critical", "blocker", "必须", "不得", "关键", "阻断")
 AMBIGUOUS_TERMS = ("appropriate", "reasonable", "as needed", "尽量", "合理", "适当", "必要时")
+EVIDENCE_MECHANISM_TERMS = {
+    "benchmark",
+    "ci",
+    "coverage",
+    "junit",
+    "pytest",
+    "report",
+    "reports",
+    "test",
+    "tests",
+    "报告",
+    "测试",
+    "覆盖率",
+    "流水线",
+}
+EVIDENCE_ASSERTION_TERMS = (
+    "confirm",
+    "demonstrate",
+    "evidence",
+    "passed",
+    "prove",
+    "show",
+    "verify",
+    "zero failures",
+    "作为证据",
+    "通过",
+    "证明",
+    "显示",
+    "零失败",
+)
+DELIVERABLE_TERMS = (
+    "downloadable",
+    "export",
+    "publish",
+    "submit",
+    "upload",
+    "user-visible",
+    "交付",
+    "发布",
+    "下载",
+    "导出",
+    "提交",
+    "上传",
+)
+GENERIC_MATCH_TERMS = {
+    "a",
+    "an",
+    "and",
+    "be",
+    "from",
+    "in",
+    "is",
+    "must",
+    "of",
+    "on",
+    "return",
+    "status",
+    "should",
+    "that",
+    "the",
+    "to",
+    "with",
+    "为",
+    "并",
+    "必须",
+    "需要",
+}
 
 
 def _criterion_type(statement: str) -> CriterionType:
@@ -68,6 +135,68 @@ def _criterion_type(statement: str) -> CriterionType:
         if any(term in lowered for term in terms):
             return criterion_type
     return CriterionType.FUNCTIONAL
+
+
+def _match_terms(text: str) -> set[str]:
+    lowered = text.casefold()
+    terms = set(re.findall(r"[a-z0-9_]+", lowered))
+    for segment in re.findall(r"[\u4e00-\u9fff]+", lowered):
+        terms.update(segment[index : index + 2] for index in range(len(segment) - 1))
+    return terms - EVIDENCE_MECHANISM_TERMS - GENERIC_MATCH_TERMS
+
+
+def _contains_term(text: str, term: str) -> bool:
+    if term.isascii():
+        return re.search(
+            rf"(?<![a-z0-9_]){re.escape(term)}(?![a-z0-9_])",
+            text,
+        ) is not None
+    return term in text
+
+
+def _is_evidence_only_criterion(item: ExtractedCriterion) -> bool:
+    lowered = item.statement.casefold()
+    has_mechanism = any(_contains_term(lowered, term) for term in EVIDENCE_MECHANISM_TERMS)
+    has_assertion = any(_contains_term(lowered, term) for term in EVIDENCE_ASSERTION_TERMS)
+    is_deliverable = any(_contains_term(lowered, term) for term in DELIVERABLE_TERMS)
+    return has_mechanism and has_assertion and not is_deliverable
+
+
+def _normalize_model_criteria(
+    items: list[ExtractedCriterion],
+) -> list[ExtractedCriterion]:
+    """Move model-split evidence mechanisms back to a related behavior criterion.
+
+    The merge is deliberately conservative: an evidence-shaped item is retained unless it
+    shares a non-generic domain term with another criterion. Explicit report deliverables are
+    never classified as evidence-only.
+    """
+
+    normalized = [item.model_copy(deep=True) for item in items]
+    evidence_indexes = [
+        index for index, item in enumerate(normalized) if _is_evidence_only_criterion(item)
+    ]
+    behavior_indexes = [
+        index for index in range(len(normalized)) if index not in evidence_indexes
+    ]
+    merged_indexes: set[int] = set()
+    for evidence_index in evidence_indexes:
+        evidence_item = normalized[evidence_index]
+        evidence_terms = _match_terms(evidence_item.statement)
+        candidates = [
+            (len(evidence_terms & _match_terms(normalized[index].statement)), index)
+            for index in behavior_indexes
+        ]
+        overlap, target_index = max(candidates, default=(0, -1))
+        if overlap == 0:
+            continue
+        target = normalized[target_index]
+        hints = [value for value in (target.verification_hint, evidence_item.statement) if value]
+        target.verification_hint = "; ".join(dict.fromkeys(hints))
+        target.critical = target.critical or evidence_item.critical
+        target.ambiguity = list(dict.fromkeys([*target.ambiguity, *evidence_item.ambiguity]))
+        merged_indexes.add(evidence_index)
+    return [item for index, item in enumerate(normalized) if index not in merged_indexes]
 
 
 class DeterministicAcceptanceExtractor:
@@ -150,6 +279,7 @@ class LLMAcceptanceExtractor:
             max_tokens=self.max_output_tokens,
         )
         envelope = ExtractedCriteriaEnvelope.model_validate(parsed)
+        normalized_items = _normalize_model_criteria(envelope.criteria)
         criteria = [
             AcceptanceCriterion(
                 id=f"AC-{index:03d}",
@@ -160,7 +290,7 @@ class LLMAcceptanceExtractor:
                 ambiguity=item.ambiguity,
                 critical=item.critical,
             )
-            for index, item in enumerate(envelope.criteria, start=1)
+            for index, item in enumerate(normalized_items, start=1)
         ]
         return ExtractionOutcome(
             criteria=criteria,

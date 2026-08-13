@@ -172,9 +172,18 @@ def _weight(term: str) -> float:
     return 1.0
 
 
-def _criterion_terms(criterion: AcceptanceCriterion) -> set[str]:
-    terms = _tokens(criterion.statement)
-    return terms - GENERIC_TERMS
+def _criterion_terms(
+    criterion: AcceptanceCriterion,
+    layer: Literal["implementation", "verification"],
+) -> tuple[set[str], bool]:
+    statement_terms = _tokens(criterion.statement) - GENERIC_TERMS
+    if layer == "verification" and criterion.verification_hint:
+        hint_terms = _tokens(criterion.verification_hint) - GENERIC_TERMS
+        # A concrete hint normally repeats at least one domain term (or test name)
+        # from the behavior. Generic fallback hints must not replace those terms.
+        if statement_terms & hint_terms:
+            return hint_terms, True
+    return statement_terms, False
 
 
 def _explicit_criterion_link(criterion: AcceptanceCriterion, item: EvidenceItem) -> bool:
@@ -198,7 +207,7 @@ def _score_match(
     layer: Literal["implementation", "verification"],
 ) -> _ScoredMatch | None:
     explicit_link = _explicit_criterion_link(criterion, item)
-    criterion_terms = _criterion_terms(criterion)
+    criterion_terms, used_verification_hint = _criterion_terms(criterion, layer)
     if not criterion_terms and not explicit_link:
         return None
 
@@ -235,6 +244,8 @@ def _score_match(
             signals.append("normalized_phrase")
         if item.kind in preferred:
             signals.append("criterion_type_kind")
+        if used_verification_hint:
+            signals.append("verification_hint_match")
 
         enough_support = (
             phrase_match
@@ -258,6 +269,7 @@ def _score_match(
             + (0.10 if phrase_match else 0.0)
             + (0.08 if item.kind in preferred else 0.0)
             + (0.05 if len(matched) >= 2 else 0.0)
+            + (0.05 if used_verification_hint else 0.0)
         )
 
     threshold = 0.55 if layer == "implementation" else 0.60

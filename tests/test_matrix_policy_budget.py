@@ -64,6 +64,32 @@ def test_matrix_requires_two_evidence_layers() -> None:
     }
 
 
+def test_verification_hint_matches_junit_without_becoming_implementation() -> None:
+    criterion = _criterion()
+    criterion.verification_hint = (
+        "Repository-local JUnit reports/junit.xml must show "
+        "test_health_api_returns_ok passed with zero failures"
+    )
+    suite = EvidenceItem.from_observation(
+        evidence_id="junit-suite",
+        kind=EvidenceKind.TEST_RESULT,
+        source_uri="file://reports/junit.xml",
+        locator="junit.xml::testsuite[0]::health",
+        content=(
+            "JUnit report=junit.xml repository_local=true suite=health tests=1 "
+            "failures=0 errors=0 zero_failures=true status=passed"
+        ),
+        observed_by="test",
+        metadata={"status": "passed", "zero_failures": True},
+    )
+
+    result = AcceptanceMatrixBuilder().build([criterion], [suite])[0]
+
+    assert result.implementation_evidence == []
+    assert [item.evidence_id for item in result.verification_evidence] == ["junit-suite"]
+    assert "verification_hint_match" in result.match_details[0].signals
+
+
 def test_matrix_rejects_single_generic_token_overlap() -> None:
     criterion = _criterion()
     unrelated_diff = EvidenceItem.from_observation(
