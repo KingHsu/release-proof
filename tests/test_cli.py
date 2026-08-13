@@ -103,3 +103,15 @@ def test_llm_probe_reports_one_bounded_successful_call(
     assert payload["status"] == "ok"
     assert payload["paid_api_calls"] == 1
     assert payload["usage"]["input_tokens"] == 5
+
+
+def test_no_subcommand_opens_interactive_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: list[bool] = []
+
+    monkeypatch.setattr(
+        "release_proof.interactive.run_interactive",
+        lambda: called.append(True) or 0,
+    )
+
+    assert main([]) == 0
+    assert called == [True]

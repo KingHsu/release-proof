@@ -42,6 +42,23 @@ ReleaseProof does not compete with a coding agent and does not edit code. It is 
 
 Python 3.11 and 3.12 are supported.
 
+For normal use, start the guided CLI and follow the Chinese prompts:
+
+```powershell
+Set-Location D:\path\to\release-proof
+.\start-release-proof.cmd
+```
+
+On the first launch only, the script creates `.venv` and installs the runtime dependencies when
+needed. All later launches reuse that environment.
+
+The first menu item runs a zero-cost built-in example. The second reviews a local Git
+repository and asks only for the repository, requirement, and optional test report. Online
+DeepSeek planning is disabled unless the user explicitly selects it and types `ONLINE`.
+
+The commands below are developer and automation interfaces; they are not required for the
+normal interactive demonstration.
+
 ```bash
 python -m venv .venv
 # Linux/macOS: source .venv/bin/activate

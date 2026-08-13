@@ -34,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="release-proof", description="Read-only, evidence-grounded release acceptance"
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=False)
     analyze = sub.add_parser("analyze", help="analyze a local Git change")
     analyze.add_argument("repository")
     analyze.add_argument("--base", default="HEAD~1")
@@ -101,6 +101,10 @@ def _requirement_source(args: argparse.Namespace) -> RequirementSource:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command is None:
+        from release_proof.interactive import run_interactive
+
+        return run_interactive()
     if args.command == "serve":
         import uvicorn
 

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add a zero-argument Chinese CLI guide and a Windows one-click launcher; the normal path asks
+  only for the repository, requirement, and optional test report, and online use needs an
+  explicit cost confirmation.
 - Add an explicit one-request `probe-llm --confirm-paid-call` command with retries disabled and a 128-token output cap.
 - Preserve safe structured-response diagnostics (stop reason and content-block types) without storing provider text, prompts, or credentials.
 - Separate the provider's single structured-response tool from candidate read-action names, accept
