@@ -52,9 +52,12 @@ Set-Location D:\path\to\release-proof
 On the first launch only, the script creates `.venv` and installs the runtime dependencies when
 needed. All later launches reuse that environment.
 
-The first menu item runs a zero-cost built-in example. The second reviews a local Git
-repository and asks only for the repository, requirement, and optional test report. Online
-DeepSeek planning is disabled unless the user explicitly selects it and types `ONLINE`.
+The first two menu items compare evidence-supported and unsupported outcomes. The third reviews
+a local Git repository and asks only for the repository, requirement, and optional test report.
+Online DeepSeek planning is disabled unless the user explicitly selects it and types `ONLINE`.
+
+See the [detailed operation guide](docs/operation-guide.md) for zero-cost and DeepSeek modes,
+successful and blocked cases, and an explanation of what each recommendation means.
 
 The commands below are developer and automation interfaces; they are not required for the
 normal interactive demonstration.

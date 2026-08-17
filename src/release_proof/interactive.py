@@ -29,6 +29,20 @@ RECOMMENDATION_LABELS = {
     Recommendation.ANALYSIS_FAILED: "分析失败",
 }
 
+SUPPORTED_DEMO_REQUIREMENT = "- Health status function returns an ok status"
+UNSUPPORTED_DEMO_REQUIREMENT = "- Exported account report contains id and total columns"
+VAGUE_REQUIREMENT_PHRASES = (
+    "功能完善",
+    "功能完成",
+    "体验完成",
+    "基本功能",
+    "整体完成",
+    "正常运行",
+    "没有问题",
+    "没问题",
+    "好用",
+)
+
 
 def _project_root() -> Path:
     candidates = [Path.cwd(), Path(__file__).resolve().parents[2]]
@@ -52,6 +66,24 @@ def _print_header(output: Output) -> None:
     output("ReleaseProof · AI 变更验收助手")
     output("只读取需求、Git 差异和测试证据；不会修改代码或批准发布。")
     output("=" * 62)
+
+
+def _looks_vague_requirement(requirement: str) -> bool:
+    compact = "".join(requirement.split()).casefold()
+    for filler in ("已经", "是", "了", "的"):
+        compact = compact.replace(filler, "")
+    return any(phrase in compact for phrase in VAGUE_REQUIREMENT_PHRASES)
+
+
+def _choose_online(input_fn: Input, output: Output) -> bool:
+    answer = _ask(input_fn, "使用真实 DeepSeek Planner？输入 y 才会继续", "n")
+    if answer.casefold() != "y":
+        return False
+    output("真实模式会产生最多 4 次模型请求；模型失败时会降级到离线规划。")
+    if _ask(input_fn, "请输入 ONLINE 确认费用") != "ONLINE":
+        output("未确认费用，已切换为零费用离线模式。")
+        return False
+    return True
 
 
 def _print_run(run: AnalysisRun, output: Output, reports_dir: Path) -> None:
@@ -177,7 +209,7 @@ def _run_analysis(
 
 def _create_demo_repository(root: Path) -> Path:
     repository = root / "runtime" / "interactive-demo" / f"run-{uuid.uuid4().hex[:8]}"
-    source = repository / "src" / "api" / "health.py"
+    source = repository / "src" / "health_status.py"
     source.parent.mkdir(parents=True)
 
     def git(*arguments: str) -> None:
@@ -197,20 +229,22 @@ def _create_demo_repository(root: Path) -> Path:
     git("config", "user.name", "ReleaseProof Demo")
     git("config", "user.email", "release-proof@example.invalid")
     source.write_text(
-        "def health_api():\n    return {'status': 'starting'}\n",
+        "def health_status():\n    return {'status': 'starting'}\n",
         encoding="utf-8",
     )
-    git("add", "src/api/health.py")
-    git("commit", "-q", "-m", "initial health endpoint")
-    source.write_text("def health_api():\n    return {'status': 'ok'}\n", encoding="utf-8")
-    git("add", "src/api/health.py")
+    git("add", "src/health_status.py")
+    git("commit", "-q", "-m", "initial health status")
+    source.write_text(
+        "def health_status():\n    return {'status': 'ok'}\n", encoding="utf-8"
+    )
+    git("add", "src/health_status.py")
     git("commit", "-q", "-m", "return ok health status")
     reports = repository / "reports"
     reports.mkdir()
     (reports / "junit.xml").write_text(
         """<?xml version="1.0" encoding="UTF-8"?>
 <testsuite name="demo" tests="1" failures="0">
-  <testcase classname="tests.test_health" name="test_health_api_returns_ok" time="0.01" />
+  <testcase classname="tests.test_health" name="test_health_status_returns_ok" time="0.01" />
 </testsuite>
 """,
         encoding="utf-8",
@@ -218,13 +252,22 @@ def _create_demo_repository(root: Path) -> Path:
     return repository
 
 
-def _run_demo(input_fn: Input, output: Output) -> None:
+def _run_demo(
+    input_fn: Input,
+    output: Output,
+    *,
+    supported: bool,
+) -> None:
     root = _project_root()
     try:
         repository = _create_demo_repository(root)
     except (OSError, RuntimeError) as exc:
         output(f"演示仓库创建失败：{type(exc).__name__}")
         return
+    requirement = (
+        SUPPORTED_DEMO_REQUIREMENT if supported else UNSUPPORTED_DEMO_REQUIREMENT
+    )
+    online = _choose_online(input_fn, output)
     _run_analysis(
         AnalysisRequest(
             repository_path=str(repository),
@@ -232,12 +275,13 @@ def _run_demo(input_fn: Input, output: Output) -> None:
             head_ref="HEAD",
             requirement_source=RequirementSource(
                 kind="inline",
-                content="- Health API returns an ok status",
+                content=requirement,
             ),
             report_paths=["reports/junit.xml"],
             mode="single",
+            continue_without_reports=not supported,
         ),
-        online=False,
+        online=online,
         input_fn=input_fn,
         output=output,
     )
@@ -261,14 +305,14 @@ def _run_repository(input_fn: Input, output: Output) -> None:
     if not requirement:
         output("验收要求不能为空。")
         return
+    if _looks_vague_requirement(requirement):
+        output("这个要求过于笼统，代码无法证明‘完善’或‘完成’。")
+        output("建议改成可观察行为，例如：点击查询后显示答案、原文引用和版本号。")
+        if _ask(input_fn, "仍然继续本次分析？(y/N)", "n").casefold() != "y":
+            output("已取消，未调用模型。")
+            return
     reports = _ask(input_fn, "测试报告路径（仓库内路径，可留空）")
-    online_answer = _ask(input_fn, "使用真实 DeepSeek Planner？输入 y 才会继续", "n")
-    online = online_answer.casefold() == "y"
-    if online:
-        output("真实模式会产生最多 4 次模型请求。")
-        if _ask(input_fn, "请输入 ONLINE 确认费用") != "ONLINE":
-            output("未确认费用，已切换为零费用离线模式。")
-            online = False
+    online = _choose_online(input_fn, output)
     _run_analysis(
         AnalysisRequest(
             repository_path=str(repository),
@@ -296,19 +340,22 @@ def run_interactive(
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     while True:
         _print_header(output)
-        output("1. 体验内置示例（零费用，推荐第一次使用）")
-        output("2. 验收本地 Git 项目")
+        output("1. 内置证据充分案例（预期：可以进入人工评审）")
+        output("2. 内置证据不足案例（预期：暂不建议发布）")
+        output("3. 验收本地 Git 项目")
         output("0. 退出")
         choice = _ask(input_fn, "请选择", "1")
         if choice == "0":
             output("已退出。")
             return 0
         if choice == "1":
-            _run_demo(input_fn, output)
+            _run_demo(input_fn, output, supported=True)
         elif choice == "2":
+            _run_demo(input_fn, output, supported=False)
+        elif choice == "3":
             _run_repository(input_fn, output)
         else:
-            output("请输入 0、1 或 2。")
+            output("请输入 0、1、2 或 3。")
             continue
         if _ask(input_fn, "继续使用？(y/N)", "n").casefold() != "y":
             return 0

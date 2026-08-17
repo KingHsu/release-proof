@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add paired evidence-supported and unsupported walkthroughs, plus a preflight warning that
+  blocks vague completion claims before an optional paid planner call.
 - Add a zero-argument Chinese CLI guide and a Windows one-click launcher; the normal path asks
   only for the repository, requirement, and optional test report, and online use needs an
   explicit cost confirmation.
